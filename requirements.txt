@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+celery[redis]
+redis
+boto3
+pydantic
+python-dotenv
+openai>=1.40.0
+typing-extensions
