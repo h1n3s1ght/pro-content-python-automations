@@ -32,3 +32,7 @@ async def get_result_endpoint(job_id: str):
         "status": await get_status(job_id),
         "result": await get_result(job_id),
     }
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
