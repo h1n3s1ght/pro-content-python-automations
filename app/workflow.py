@@ -10,7 +10,12 @@ from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .storage import append_log, get_progress, set_progress
 
-MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "8"))
+MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "6"))
+
+NON_GENERATIVE_PATHS = {
+    "/contact-us",
+    "/contact-thank-you",
+}
 
 
 async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
@@ -33,7 +38,17 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         if job_id:
             await _merge_progress(job_id, patch)
 
-    await prog({"stage": "sitemap"})
+    await prog(
+        {
+            "stage": "sitemap",
+            "pages_total": 0,
+            "pages_done": 0,
+            "pages_failed": 0,
+            "pages_skipped": 0,
+            "current": "",
+        }
+    )
+
     sitemap_data = webhook_payload.get("sitemap_data")
     if not sitemap_data:
         await log("sitemap_generating")
@@ -43,14 +58,19 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         await log("sitemap_provided_in_payload")
 
     try:
-        upload_sitemap(metadata, sitemap_data, stamp)
-        await log("sitemap_uploaded")
+        s3_key = upload_sitemap(metadata, sitemap_data, stamp)
+        await log(f"sitemap_uploaded: {s3_key}")
     except Exception as e:
         await log(f"sitemap_upload_failed: {e}")
 
     rows: List[Dict[str, Any]] = list(sitemap_data.get("rows") or [])
-    pages = [r for r in rows if bool(r.get("generative_content")) is True]
-    skipped = max(len(rows) - len(pages), 0)
+
+    generative_rows = [r for r in rows if bool(r.get("generative_content")) is True]
+    excluded_forced = [r for r in generative_rows if (r.get("path") or "") in NON_GENERATIVE_PATHS]
+    pages = [r for r in generative_rows if (r.get("path") or "") not in NON_GENERATIVE_PATHS]
+
+    non_generative_count = sum(1 for r in rows if bool(r.get("generative_content")) is not True)
+    skipped = non_generative_count + len(excluded_forced)
 
     await prog(
         {
@@ -62,7 +82,6 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             "current": "",
         }
     )
-    await log(f"pages_selected: total={len(pages)} skipped={skipped}")
 
     sem = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
     lock = asyncio.Lock()
@@ -108,10 +127,10 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     final_copy = compile_final(envelopes)
 
     try:
-        upload_copy(metadata, final_copy, stamp)
-        await log("copy_uploaded")
+        s3_key = upload_copy(metadata, final_copy, stamp)
+        await log(f"copy_uploaded: {s3_key}")
     except Exception as e:
         await log(f"copy_upload_failed: {e}")
 
-    await prog({"stage": "workflow_done", "current": ""})
+    await prog({"stage": "completed", "current": ""})
     return final_copy

@@ -1,28 +1,34 @@
 from __future__ import annotations
+
+import asyncio
 import json
 import os
-import asyncio
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from openai import OpenAI, AssistantEventHandler
+from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import override
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-PRO_SITEMAP_ASSISTANT_ID = os.environ["PRO_SITEMAP_ASSISTANT_ID"]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+PRO_SITEMAP_ASSISTANT_ID = os.getenv("PRO_SITEMAP_ASSISTANT_ID", "").strip()
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is missing or empty in this container environment")
+if not PRO_SITEMAP_ASSISTANT_ID:
+    raise RuntimeError("PRO_SITEMAP_ASSISTANT_ID is missing or empty in this container environment")
+
+client = OpenAI(
+    api_key=OPENAI_API_KEY,
+    default_headers={"OpenAI-Beta": "assistants=v2"},
+)
 
 
-# -------------------------
-# Strict sitemap schema (minimal, matches what you use)
-# Expand if you want to validate every row field strictly.
-# -------------------------
 class SitemapMetaCounts(BaseModel):
     model_config = ConfigDict(extra="forbid")
     total_rows: int = 0
     counted_pages: int = 0
     excluded_pages: int = 0
+
 
 class SitemapMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -33,9 +39,8 @@ class SitemapMeta(BaseModel):
     budget_ok: bool = False
     validation_passed: bool = False
 
+
 class SitemapRow(BaseModel):
-    # Allow extra for now, since your sitemap rows are wide.
-    # If you want ultimate strictness, set extra="forbid" and list all fields.
     model_config = ConfigDict(extra="allow")
     path: str = ""
     generative_content: bool = False
@@ -44,6 +49,7 @@ class SitemapRow(BaseModel):
     html_title: str = ""
     meta_description: str = ""
 
+
 class SitemapData(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: str = ""
@@ -51,9 +57,8 @@ class SitemapData(BaseModel):
     headers: list[str] = Field(default_factory=list)
     rows: list[SitemapRow] = Field(default_factory=list)
 
+
 class SitemapAssistantOutput(BaseModel):
-    # Your existing agent output wrapped sitemap_data under a key.
-    # Keep this wrapper so you can evolve without breaking.
     model_config = ConfigDict(extra="forbid")
     sitemap_data: SitemapData = Field(default_factory=SitemapData)
 
@@ -74,17 +79,74 @@ class JSONCollector(AssistantEventHandler):
         return "".join(self._buf).strip()
 
 
+def _minify(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+
+def _normalize_sitemap_output(data: Any) -> Dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"sitemap_data": {"version": "", "meta": {}, "headers": [], "rows": []}}
+
+    root = dict(data)
+    root.pop("name", None)
+
+    sitemap_data = root.get("sitemap_data")
+    if not isinstance(sitemap_data, dict):
+        sitemap_data = root if isinstance(root.get("rows"), list) else {}
+
+    sitemap_data = dict(sitemap_data)
+
+    meta = sitemap_data.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    else:
+        meta = dict(meta)
+
+    meta.pop("fail_report", None)
+
+    rows = sitemap_data.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+
+    counts_in = meta.get("counts")
+    if not isinstance(counts_in, dict):
+        counts_in = {}
+    else:
+        counts_in = dict(counts_in)
+
+    total_rows = counts_in.get("total_rows")
+    if not isinstance(total_rows, int):
+        total = counts_in.get("total")
+        if isinstance(total, int):
+            total_rows = total
+        else:
+            total_rows = len(rows)
+
+    counted_pages = counts_in.get("counted_pages")
+    if not isinstance(counted_pages, int):
+        counted_pages = sum(1 for r in rows if isinstance(r, dict) and bool(r.get("generative_content")) is True)
+
+    excluded_pages = counts_in.get("excluded_pages")
+    if not isinstance(excluded_pages, int):
+        excluded_pages = max(total_rows - counted_pages, 0)
+
+    meta["counts"] = {
+        "total_rows": int(total_rows),
+        "counted_pages": int(counted_pages),
+        "excluded_pages": int(excluded_pages),
+    }
+
+    sitemap_data["meta"] = meta
+    return {"sitemap_data": sitemap_data}
+
+
 def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Sends metadata/userdata to Sitemap assistant, streams JSON output,
-    validates it, returns as dict.
-    """
     thread = client.beta.threads.create()
 
     client.beta.threads.messages.create(
         thread_id=thread.id,
         role="user",
-        content=json.dumps(payload, separators=(",", ":"), ensure_ascii=False),
+        content=_minify(payload),
     )
 
     handler = JSONCollector()
@@ -97,8 +159,8 @@ def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     raw = handler.text()
     data = json.loads(raw)
+    data = _normalize_sitemap_output(data)
 
-    # Strict validate wrapper -> sitemap_data
     validated = SitemapAssistantOutput.model_validate(data)
     return json.loads(validated.model_dump_json())
 

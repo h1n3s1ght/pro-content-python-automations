@@ -105,11 +105,11 @@ async def job_page(job_id: str):
     logs = await get_log(job_id, 300)
 
     stage = _safe(prog.get("stage"))
-    total = _safe(prog.get("pages_total"))
-    done = _safe(prog.get("pages_done"))
-    failed = _safe(prog.get("pages_failed"))
+    total = _safe(prog.get("pages_total", 0))
+    done = _safe(prog.get("pages_done", 0))
+    failed = _safe(prog.get("pages_failed", 0))
+    current = _safe(prog.get("current", ""))
     skipped = _safe(prog.get("pages_skipped"))
-    current = _safe(prog.get("current"))
 
     log_text = "\n".join(logs) if logs else ""
 

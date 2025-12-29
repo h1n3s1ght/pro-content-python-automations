@@ -1,14 +1,13 @@
-from fastapi import FastAPI, Request
-from .storage import register_job, set_status, get_status, get_result
 from __future__ import annotations
 
 import uuid
 
 from dotenv import load_dotenv
+from fastapi import FastAPI
 
 from .models import WebhookInput
 from .tasks import run_full_job
-from .storage import register_job, set_status
+from .storage import get_result, get_status, register_job, set_status
 from .ui import router as ui_router
 
 load_dotenv()
