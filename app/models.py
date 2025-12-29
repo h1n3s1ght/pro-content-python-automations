@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional, Literal, Union
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -63,6 +63,51 @@ class CTA(BaseModel):
     title: str = ""
     content: str = ""
 
+class Counts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mandatory: int
+    optional: int
+    service_details: int
+    industry_details: int
+    location_details: int
+    total: int
+
+class SitemapMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    business_name_sanitized: str
+    service_type: Literal["pro"]
+    counts: Counts
+    validation_passed: bool
+    fail_report: Optional[Dict[str, Any]] = None
+
+class SitemapRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    page_type: str
+    page_title: str
+    html_title: str
+    meta_description: str
+    index: bool
+    follow: bool
+    canonical: str
+    sort_order: int
+    locale: str
+    notes: str
+    generative_content: bool
+    content_page_type: str
+    navigation_category: Optional[str] = None
+    navigation_label: Optional[str] = None
+
+class SitemapData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    version: str
+    meta: SitemapMeta
+    headers: List[Any]
+    rows: List[SitemapRow]
+
+class SitemapAssistantOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sitemap_data: SitemapData
 
 # -------------------------
 # Home/About payloads

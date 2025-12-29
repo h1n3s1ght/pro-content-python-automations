@@ -8,5 +8,4 @@ async def generate_sitemap(metadata: Dict[str, Any], userdata: Dict[str, Any]) -
     payload = {"metadata": metadata, "userdata": userdata}
     out = await generate_sitemap_streaming(payload)
 
-    # out is expected to be: { "sitemap_data": { ... } }
     return out["sitemap_data"]
