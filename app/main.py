@@ -3,8 +3,9 @@ from __future__ import annotations
 import uuid
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
+from .auth import require_bearer
 from .models import WebhookInput
 from .tasks import run_full_job
 from .storage import get_result, get_status, register_job, set_status
@@ -16,7 +17,7 @@ app = FastAPI()
 app.include_router(ui_router)
 
 
-@app.post("/webhook/pro-form")
+@app.post("/webhook/pro-form", dependencies=[Depends(require_bearer)])
 async def webhook_pro_form(payload: WebhookInput):
     job_id = str(uuid.uuid4())
     await register_job(job_id)
@@ -25,7 +26,7 @@ async def webhook_pro_form(payload: WebhookInput):
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.get("/result/{job_id}")
+@app.get("/result/{job_id}", dependencies=[Depends(require_bearer)])
 async def get_result_endpoint(job_id: str):
     return {
         "job_id": job_id,

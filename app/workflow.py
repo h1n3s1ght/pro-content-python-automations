@@ -9,6 +9,7 @@ from .openai_copy import generate_page_with_retries
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .storage import append_log, get_progress, set_progress
+from .post_zapier import post_final_copy
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "6"))
 
@@ -131,6 +132,12 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         await log(f"copy_uploaded: {s3_key}")
     except Exception as e:
         await log(f"copy_upload_failed: {e}")
+
+    try:
+        ok, msg = await post_final_copy(final_copy=final_copy, metadata=metadata)
+        await log(f"zapier:{msg}")
+    except Exception as e:
+        await log(f"zapier_exception: {e}")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy
