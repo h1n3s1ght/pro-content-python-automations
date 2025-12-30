@@ -19,6 +19,28 @@ NON_GENERATIVE_PATHS = {
 }
 
 
+def _extract_business_name(metadata: Dict[str, Any]) -> str:
+    v = (
+        (metadata or {}).get("business_name")
+        or (metadata or {}).get("businessName")
+        or (metadata or {}).get("business_name_sanitized")
+        or (metadata or {}).get("business")
+        or ""
+    )
+    return (str(v).strip() if v is not None else "").strip()
+
+
+def _extract_business_domain(metadata: Dict[str, Any]) -> str:
+    v = (
+        (metadata or {}).get("businessDomain")
+        or (metadata or {}).get("business_domain")
+        or (metadata or {}).get("domain")
+        or (metadata or {}).get("website")
+        or ""
+    )
+    return (str(v).strip() if v is not None else "").strip()
+
+
 async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
     cur = await get_progress(job_id)
     cur = cur or {}
@@ -31,6 +53,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     userdata = webhook_payload.get("userdata") or {}
     stamp = datetime_cst_stamp()
 
+    business_name = _extract_business_name(metadata)
+    business_domain = _extract_business_domain(metadata)
+
     async def log(msg: str) -> None:
         if job_id:
             await append_log(job_id, msg)
@@ -38,6 +63,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     async def prog(patch: Dict[str, Any]) -> None:
         if job_id:
             await _merge_progress(job_id, patch)
+
+    await log(f"meta_business_name: {business_name or 'MISSING'}")
+    await log(f"meta_business_domain: {business_domain or 'MISSING'}")
 
     await prog(
         {
@@ -133,11 +161,18 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     except Exception as e:
         await log(f"copy_upload_failed: {e}")
 
-    try:
-        ok, msg = await post_final_copy(final_copy=final_copy, metadata=metadata)
-        await log(f"zapier:{msg}")
-    except Exception as e:
-        await log(f"zapier_exception: {e}")
+    if not business_name or not business_domain:
+        await log("zapier_skipped: missing_business_headers")
+    else:
+        try:
+            ok, msg = await post_final_copy(
+                final_copy=final_copy,
+                business_name=business_name,
+                business_domain=business_domain,
+            )
+            await log(f"zapier:{msg}")
+        except Exception as e:
+            await log(f"zapier_exception: {e}")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy
