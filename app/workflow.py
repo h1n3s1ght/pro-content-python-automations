@@ -11,7 +11,8 @@ from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .storage import append_log, get_progress, set_progress
 from .post_zapier import post_final_copy
 
-MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "6"))
+MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
+PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
 
 NON_GENERATIVE_PATHS = {
     "/contact-us",
@@ -45,10 +46,7 @@ async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
     await set_progress(job_id, cur)
 
 
-async def run_workflow(
-    webhook_payload: Dict[str, Any],
-    job_id: Optional[str] = None,
-) -> Dict[str, Any]:
+async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
     metadata = webhook_payload.get("metadata") or {}
     userdata = webhook_payload.get("userdata") or {}
     stamp = datetime_cst_stamp()
@@ -95,11 +93,7 @@ async def run_workflow(
     rows: List[Dict[str, Any]] = list(sitemap_data.get("rows") or [])
 
     generative_rows = [r for r in rows if bool(r.get("generative_content")) is True]
-    pages = [
-        r for r in generative_rows
-        if (r.get("path") or "") not in NON_GENERATIVE_PATHS
-    ]
-
+    pages = [r for r in generative_rows if (r.get("path") or "") not in NON_GENERATIVE_PATHS]
     skipped = len(rows) - len(pages)
 
     await prog(
@@ -128,11 +122,16 @@ async def run_workflow(
                 "sitemap_data": sitemap_data,
                 "this_page": page,
             }
+
             env: Optional[Dict[str, Any]] = None
             try:
-                env = await generate_page_with_retries(payload)
+                env = await asyncio.wait_for(generate_page_with_retries(payload), timeout=PAGE_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                await log(f"page_timeout: {path}: {PAGE_TIMEOUT_SECONDS}s")
+                env = None
             except Exception as e:
                 await log(f"page_exception: {path}: {e}")
+                env = None
 
             async with lock:
                 if env is None:
@@ -141,13 +140,7 @@ async def run_workflow(
                 else:
                     counters["done"] += 1
                     await log(f"page_done: {path}")
-
-                await prog(
-                    {
-                        "pages_done": counters["done"],
-                        "pages_failed": counters["failed"],
-                    }
-                )
+                await prog({"pages_done": counters["done"], "pages_failed": counters["failed"]})
             return env
 
     results = await asyncio.gather(*(run_page(p) for p in pages))
@@ -163,16 +156,9 @@ async def run_workflow(
         await log(f"copy_upload_failed: {e}")
 
     if business_name and business_domain:
-        await log(
-            f"Sending request to Zapier with Business information of: "
-            f"{business_name} and {business_domain}"
-        )
+        await log(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
         try:
-            ok, msg = await post_final_copy(
-                final_copy=final_copy,
-                business_name=business_name,
-                business_domain=business_domain,
-            )
+            ok, msg = await post_final_copy(final_copy=final_copy, business_name=business_name, business_domain=business_domain)
             await log(f"zapier:{msg}")
         except Exception as e:
             await log(f"zapier_exception: {e}")

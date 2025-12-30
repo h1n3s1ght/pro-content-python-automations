@@ -4,7 +4,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 
 import redis.asyncio as redis
 
@@ -47,7 +47,7 @@ async def set_status(job_id: str, status: str) -> None:
     r = _client()
     await r.set(_k(job_id, "status"), status, ex=JOB_TTL_SECONDS)
     s = (status or "").lower()
-    if s in ("completed", "failed"):
+    if s in ("completed", "failed", "canceled"):
         ts = int(time.time())
         await r.zadd("jobs:inactive", {job_id: ts})
         await r.expire("jobs:inactive", JOB_TTL_SECONDS)
@@ -151,6 +151,7 @@ async def purge_inactive() -> int:
                 _k(jid, "ctr:pages_done"),
                 _k(jid, "ctr:pages_failed"),
                 _k(jid, "ctr:pages_skipped"),
+                _k(jid, "paused"),
             ]
         )
     if keys:
@@ -205,3 +206,103 @@ async def get_monthly_queue_logs(month_yyyy_mm: str) -> List[Dict[str, Any]]:
 async def clear_monthly_queue_logs(month_yyyy_mm: str) -> None:
     r = _client()
     await r.delete(f"queue_logs:{month_yyyy_mm}")
+
+
+async def is_paused(job_id: str) -> bool:
+    r = _client()
+    v = await r.get(_k(job_id, "paused"))
+    return str(v or "").strip() == "1"
+
+
+async def pause_job(job_id: str) -> bool:
+    s = (await get_status(job_id) or "").lower()
+    if s not in ("queued", "paused"):
+        return False
+    r = _client()
+    await r.set(_k(job_id, "paused"), "1", ex=JOB_TTL_SECONDS)
+    if s != "paused":
+        await set_status(job_id, "paused")
+        await append_log(job_id, "job_paused_by_user")
+    return True
+
+
+async def resume_job(job_id: str) -> bool:
+    s = (await get_status(job_id) or "").lower()
+    if s != "paused":
+        return False
+    r = _client()
+    await r.delete(_k(job_id, "paused"))
+    await set_status(job_id, "queued")
+    await append_log(job_id, "job_resumed_by_user")
+    return True
+
+
+async def cancel_queued_job(job_id: str) -> bool:
+    s = (await get_status(job_id) or "").lower()
+    if s not in ("queued", "paused"):
+        return False
+    await append_log(job_id, "job_canceled_by_user")
+    await set_status(job_id, "canceled")
+    return True
+
+
+async def move_job(job_id: str, direction: str) -> bool:
+    s = (await get_status(job_id) or "").lower()
+    if s not in ("queued", "paused"):
+        return False
+
+    r = _client()
+    direction = (direction or "").lower().strip()
+
+    items: List[Tuple[str, float]] = await r.zrange("jobs:index", 0, -1, withscores=True)
+    if not items:
+        return False
+
+    ids = [jid for jid, _ in items]
+    if job_id not in ids:
+        return False
+
+    scores = [sc for _, sc in items]
+    min_score = min(scores)
+    max_score = max(scores)
+
+    cur_score = None
+    for jid, sc in items:
+        if jid == job_id:
+            cur_score = float(sc)
+            break
+    if cur_score is None:
+        return False
+
+    if direction == "top":
+        new_score = min_score - 1.0
+    elif direction == "bottom":
+        new_score = max_score + 1.0
+    elif direction in ("up", "down"):
+        idx = ids.index(job_id)
+        if direction == "up":
+            if idx == 0:
+                return True
+            neighbor_id = ids[idx - 1]
+        else:
+            if idx == len(ids) - 1:
+                return True
+            neighbor_id = ids[idx + 1]
+
+        neighbor_score = None
+        for jid, sc in items:
+            if jid == neighbor_id:
+                neighbor_score = float(sc)
+                break
+        if neighbor_score is None:
+            return False
+
+        await r.zadd("jobs:index", {job_id: neighbor_score, neighbor_id: cur_score})
+        await r.expire("jobs:index", JOB_TTL_SECONDS)
+        return True
+    else:
+        return False
+
+    await r.zadd("jobs:index", {job_id: new_score})
+    await r.expire("jobs:index", JOB_TTL_SECONDS)
+    return True
