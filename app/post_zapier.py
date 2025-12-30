@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 
@@ -21,16 +21,22 @@ async def post_final_copy(
     if not ZAPIER_WEBHOOK_URL:
         return False, "missing_zapier_url"
 
-    payload = {"data": {"content": final_copy}}
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-Business-Domain": (business_domain or "").strip(),
-        "X-Business-Name": (business_name or "").strip(),
+    payload = {
+        "data": {
+            "content": final_copy,
+        },
+        "metadata": {
+            "businessName": (business_name or "").strip(),
+            "domainName": (business_domain or "").strip(),
+        },
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(ZAPIER_WEBHOOK_URL, json=payload, headers=headers)
+        resp = await client.post(
+            ZAPIER_WEBHOOK_URL,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
     if 200 <= resp.status_code < 300:
         return True, f"posted:{resp.status_code}"

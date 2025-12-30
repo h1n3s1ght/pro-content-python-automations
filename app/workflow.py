@@ -21,34 +21,34 @@ NON_GENERATIVE_PATHS = {
 
 def _extract_business_name(metadata: Dict[str, Any]) -> str:
     v = (
-        (metadata or {}).get("business_name")
-        or (metadata or {}).get("businessName")
-        or (metadata or {}).get("business_name_sanitized")
-        or (metadata or {}).get("business")
+        metadata.get("business_name")
+        or metadata.get("businessName")
+        or metadata.get("business_name_sanitized")
         or ""
     )
-    return (str(v).strip() if v is not None else "").strip()
+    return str(v).strip()
 
 
 def _extract_business_domain(metadata: Dict[str, Any]) -> str:
     v = (
-        (metadata or {}).get("businessDomain")
-        or (metadata or {}).get("business_domain")
-        or (metadata or {}).get("domain")
-        or (metadata or {}).get("website")
+        metadata.get("businessDomain")
+        or metadata.get("business_domain")
+        or metadata.get("domain")
         or ""
     )
-    return (str(v).strip() if v is not None else "").strip()
+    return str(v).strip()
 
 
 async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
-    cur = await get_progress(job_id)
-    cur = cur or {}
+    cur = await get_progress(job_id) or {}
     cur.update(patch)
     await set_progress(job_id, cur)
 
 
-async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
+async def run_workflow(
+    webhook_payload: Dict[str, Any],
+    job_id: Optional[str] = None,
+) -> Dict[str, Any]:
     metadata = webhook_payload.get("metadata") or {}
     userdata = webhook_payload.get("userdata") or {}
     stamp = datetime_cst_stamp()
@@ -95,11 +95,12 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     rows: List[Dict[str, Any]] = list(sitemap_data.get("rows") or [])
 
     generative_rows = [r for r in rows if bool(r.get("generative_content")) is True]
-    excluded_forced = [r for r in generative_rows if (r.get("path") or "") in NON_GENERATIVE_PATHS]
-    pages = [r for r in generative_rows if (r.get("path") or "") not in NON_GENERATIVE_PATHS]
+    pages = [
+        r for r in generative_rows
+        if (r.get("path") or "") not in NON_GENERATIVE_PATHS
+    ]
 
-    non_generative_count = sum(1 for r in rows if bool(r.get("generative_content")) is not True)
-    skipped = non_generative_count + len(excluded_forced)
+    skipped = len(rows) - len(pages)
 
     await prog(
         {
@@ -132,7 +133,6 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                 env = await generate_page_with_retries(payload)
             except Exception as e:
                 await log(f"page_exception: {path}: {e}")
-                env = None
 
             async with lock:
                 if env is None:
@@ -141,6 +141,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                 else:
                     counters["done"] += 1
                     await log(f"page_done: {path}")
+
                 await prog(
                     {
                         "pages_done": counters["done"],
@@ -161,9 +162,11 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     except Exception as e:
         await log(f"copy_upload_failed: {e}")
 
-    if not business_name or not business_domain:
-        await log("zapier_skipped: missing_business_headers")
-    else:
+    if business_name and business_domain:
+        await log(
+            f"Sending request to Zapier with Business information of: "
+            f"{business_name} and {business_domain}"
+        )
         try:
             ok, msg = await post_final_copy(
                 final_copy=final_copy,
@@ -173,6 +176,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             await log(f"zapier:{msg}")
         except Exception as e:
             await log(f"zapier_exception: {e}")
+    else:
+        await log("zapier_skipped: missing_business_metadata")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy
