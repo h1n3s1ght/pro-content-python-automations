@@ -32,7 +32,8 @@ def _extract_business_name(metadata: Dict[str, Any]) -> str:
 
 def _extract_business_domain(metadata: Dict[str, Any]) -> str:
     v = (
-        metadata.get("businessDomain")
+        metadata.get("domainName")
+        or metadata.get("businessDomain")
         or metadata.get("business_domain")
         or metadata.get("domain")
         or ""
@@ -49,6 +50,7 @@ async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
 async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
     metadata = webhook_payload.get("metadata") or {}
     userdata = webhook_payload.get("userdata") or {}
+    querystring = webhook_payload.get("querystring") or {}
     stamp = datetime_cst_stamp()
 
     business_name = _extract_business_name(metadata)
@@ -158,7 +160,12 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     if business_name and business_domain:
         await log(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
         try:
-            ok, msg = await post_final_copy(final_copy=final_copy, business_name=business_name, business_domain=business_domain)
+            ok, msg = await post_final_copy(
+                final_copy=final_copy,
+                business_name=business_name,
+                business_domain=business_domain,
+                querystring=querystring,
+            )
             await log(f"zapier:{msg}")
         except Exception as e:
             await log(f"zapier_exception: {e}")
