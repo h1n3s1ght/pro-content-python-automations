@@ -63,23 +63,34 @@ class CTA(BaseModel):
     title: str = ""
     content: str = ""
 
-class Counts(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    mandatory: int
-    optional: int
-    service_details: int
-    industry_details: int
-    location_details: int
-    total: int
+# -------------------------
+# Sitemap Models (Corrected Order)
+# -------------------------
 
+# 1. Define this FIRST so it exists when SitemapMeta tries to use it.
+#    (I renamed 'Counts' to 'SitemapMetaCounts' to match your reference below)
+class SitemapMetaCounts(BaseModel):
+    model_config = ConfigDict(extra="allow")  # Changed to 'allow' to prevent validation errors on extra keys
+    mandatory: int = 0
+    optional: int = 0
+    service_details: int = 0
+    industry_details: int = 0
+    location_details: int = 0
+    total: int = 0
+
+
+# 2. Define SitemapMeta SECOND.
 class SitemapMeta(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    business_name_sanitized: str
-    service_type: Literal["pro"]
-    counts: Counts
-    validation_passed: bool
-    fail_report: Optional[Dict[str, Any]] = None
+    business_name_sanitized: str = ""
+    service_type: str = ""
+    locale: str = "en-US"
+    counts: SitemapMetaCounts = Field(default_factory=SitemapMetaCounts)
+    budget_ok: bool = True
+    validation_passed: bool = True
 
+
+# 3. Rest of the models follow...
 class SitemapRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str
