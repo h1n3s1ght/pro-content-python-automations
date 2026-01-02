@@ -10,6 +10,7 @@ from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .storage import append_log, get_progress, set_progress
 from .post_zapier import post_final_copy
+from .openai_seo import generate_seo_keywords
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
@@ -33,6 +34,7 @@ def _extract_business_name(metadata: Dict[str, Any]) -> str:
 def _extract_business_domain(metadata: Dict[str, Any]) -> str:
     v = (
         metadata.get("domainName")
+        or metadata.get("domain_name")
         or metadata.get("businessDomain")
         or metadata.get("business_domain")
         or metadata.get("domain")
@@ -50,7 +52,6 @@ async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
 async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
     metadata = webhook_payload.get("metadata") or {}
     userdata = webhook_payload.get("userdata") or {}
-    querystring = webhook_payload.get("querystring") or {}
     stamp = datetime_cst_stamp()
 
     business_name = _extract_business_name(metadata)
@@ -79,12 +80,28 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     )
 
     sitemap_data = webhook_payload.get("sitemap_data")
+    seo_task = asyncio.create_task(generate_seo_keywords(metadata=metadata, userdata=userdata))
+
     if not sitemap_data:
         await log("sitemap_generating")
-        sitemap_data = await generate_sitemap(metadata, userdata)
-        await log("sitemap_generated")
+        sitemap_task = asyncio.create_task(generate_sitemap(metadata, userdata))
+        try:
+            sitemap_data = await sitemap_task
+            await log("sitemap_generated")
+        except Exception as e:
+            await log(f"sitemap_exception: {e}")
+            sitemap_data = {}
     else:
         await log("sitemap_provided_in_payload")
+
+    seo_keywords: List[str] = []
+    try:
+        seo_out = await seo_task
+        seo_keywords = list(seo_out.get("keywords") or [])[:5]
+        await log(f"seo_keywords: {seo_keywords}")
+    except Exception as e:
+        await log(f"seo_exception: {e}")
+        seo_keywords = []
 
     try:
         s3_key = upload_sitemap(metadata, sitemap_data, stamp)
@@ -92,7 +109,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     except Exception as e:
         await log(f"sitemap_upload_failed: {e}")
 
-    rows: List[Dict[str, Any]] = list(sitemap_data.get("rows") or [])
+    rows: List[Dict[str, Any]] = list((sitemap_data or {}).get("rows") or [])
 
     generative_rows = [r for r in rows if bool(r.get("generative_content")) is True]
     pages = [r for r in generative_rows if (r.get("path") or "") not in NON_GENERATIVE_PATHS]
@@ -113,6 +130,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     lock = asyncio.Lock()
     counters = {"done": 0, "failed": 0}
 
+    userdata_for_copy = dict(userdata or {})
+    userdata_for_copy["seo_keywords"] = seo_keywords
+
     async def run_page(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         path = page.get("path", "")
         async with sem:
@@ -120,9 +140,10 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             await log(f"page_start: {path}")
             payload = {
                 "metadata": metadata,
-                "userdata": userdata,
+                "userdata": userdata_for_copy,
                 "sitemap_data": sitemap_data,
                 "this_page": page,
+                "seo_keywords": seo_keywords,
             }
 
             env: Optional[Dict[str, Any]] = None
@@ -160,12 +181,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     if business_name and business_domain:
         await log(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
         try:
-            ok, msg = await post_final_copy(
-                final_copy=final_copy,
-                business_name=business_name,
-                business_domain=business_domain,
-                querystring=querystring,
-            )
+            ok, msg = await post_final_copy(final_copy=final_copy, business_name=business_name, business_domain=business_domain)
             await log(f"zapier:{msg}")
         except Exception as e:
             await log(f"zapier_exception: {e}")
