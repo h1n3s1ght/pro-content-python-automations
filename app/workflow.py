@@ -80,6 +80,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     )
 
     sitemap_data = webhook_payload.get("sitemap_data")
+    if not sitemap_data:
+        sitemap_data = await generate_sitemap(metadata=metadata, userdata=userdata)
+
     seo_task = asyncio.create_task(generate_seo_keywords(metadata=metadata, userdata=userdata))
 
     if not sitemap_data:

@@ -106,8 +106,8 @@ async def _call_openai_with_transient_retries(payload: Dict[str, Any]) -> Dict[s
     raise RuntimeError(last_err or "unknown error")
 
 
-async def generate_page_with_retries(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    last_err: Optional[str] = None
+async def generate_page_with_retries(payload):
+    last_err = None
     for attempt in range(1, MAX_PAGE_RETRIES + 1):
         try:
             return await _call_openai_with_transient_retries(payload)
@@ -117,5 +117,5 @@ async def generate_page_with_retries(payload: Dict[str, Any]) -> Optional[Dict[s
             last_err = f"run error: {e}"
         await asyncio.sleep(0.6 * attempt)
 
-    print(f"[WARN] page generation failed after {MAX_PAGE_RETRIES} attempts: {last_err}")
-    return None
+    raise RuntimeError(f"page generation failed after {MAX_PAGE_RETRIES}: {last_err}")
+
