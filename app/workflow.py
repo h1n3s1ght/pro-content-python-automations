@@ -171,6 +171,18 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     results = await asyncio.gather(*(run_page(p) for p in pages))
     envelopes = [r for r in results if r is not None]
+    kind_counts: Dict[str, int] = {}
+    utility_paths: List[str] = []
+    for env in envelopes:
+        kind = str((env or {}).get("page_kind") or "unknown")
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        if kind == "utility_page":
+            path = str((env or {}).get("path") or "")
+            if path:
+                utility_paths.append(path)
+    await log(f"envelope_counts: {kind_counts}")
+    if utility_paths:
+        await log(f"utility_paths: {utility_paths}")
 
     await prog({"stage": "compile"})
     final_copy = compile_final(envelopes)
