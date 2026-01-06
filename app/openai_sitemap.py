@@ -109,32 +109,8 @@ def _normalize_sitemap_output(data: Any) -> Dict[str, Any]:
         rows = []
 
     counts_in = meta.get("counts")
-    if not isinstance(counts_in, dict):
-        counts_in = {}
-    else:
-        counts_in = dict(counts_in)
-
-    total_rows = counts_in.get("total_rows")
-    if not isinstance(total_rows, int):
-        total = counts_in.get("total")
-        if isinstance(total, int):
-            total_rows = total
-        else:
-            total_rows = len(rows)
-
-    counted_pages = counts_in.get("counted_pages")
-    if not isinstance(counted_pages, int):
-        counted_pages = sum(1 for r in rows if isinstance(r, dict) and bool(r.get("generative_content")) is True)
-
-    excluded_pages = counts_in.get("excluded_pages")
-    if not isinstance(excluded_pages, int):
-        excluded_pages = max(total_rows - counted_pages, 0)
-
-    meta["counts"] = {
-        "total_rows": int(total_rows),
-        "counted_pages": int(counted_pages),
-        "excluded_pages": int(excluded_pages),
-    }
+    if isinstance(counts_in, dict):
+        meta["counts"] = dict(counts_in)
 
     sitemap_data["meta"] = meta
     return {"sitemap_data": sitemap_data}
@@ -142,6 +118,7 @@ def _normalize_sitemap_output(data: Any) -> Dict[str, Any]:
 
 def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
     thread = client.beta.threads.create()
+    print(f"[sitemap] thread_id: {thread.id}")
 
     client.beta.threads.messages.create(
         thread_id=thread.id,
@@ -156,6 +133,20 @@ def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
         event_handler=handler,
     ) as stream:
         stream.until_done()
+        run = None
+        get_final_run = getattr(stream, "get_final_run", None)
+        if callable(get_final_run):
+            try:
+                run = get_final_run()
+            except Exception:
+                run = None
+        run_id = getattr(run, "id", "") if run is not None else ""
+        if run_id:
+            thread_url = f"https://platform.openai.com/threads/{thread.id}"
+            run_url = f"https://platform.openai.com/threads/{thread.id}/runs/{run_id}"
+            print(f"[sitemap] run_id: {run_id}")
+            print(f"[sitemap] thread_url: {thread_url}")
+            print(f"[sitemap] run_url: {run_url}")
 
     raw = handler.text()
     data = json.loads(raw)

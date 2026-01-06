@@ -57,6 +57,7 @@ def run_copy_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
     client = _new_client()
 
     thread = client.beta.threads.create()
+    print(f"[copy] thread_id: {thread.id}")
 
     client.beta.threads.messages.create(
         thread_id=thread.id,
@@ -71,6 +72,20 @@ def run_copy_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
         event_handler=handler,
     ) as stream:
         stream.until_done()
+        run = None
+        get_final_run = getattr(stream, "get_final_run", None)
+        if callable(get_final_run):
+            try:
+                run = get_final_run()
+            except Exception:
+                run = None
+        run_id = getattr(run, "id", "") if run is not None else ""
+        if run_id:
+            thread_url = f"https://platform.openai.com/threads/{thread.id}"
+            run_url = f"https://platform.openai.com/threads/{thread.id}/runs/{run_id}"
+            print(f"[copy] run_id: {run_id}")
+            print(f"[copy] thread_url: {thread_url}")
+            print(f"[copy] run_url: {run_url}")
 
     raw = handler.text()
     data = json.loads(raw)
@@ -118,4 +133,3 @@ async def generate_page_with_retries(payload):
         await asyncio.sleep(0.6 * attempt)
 
     raise RuntimeError(f"page generation failed after {MAX_PAGE_RETRIES}: {last_err}")
-
