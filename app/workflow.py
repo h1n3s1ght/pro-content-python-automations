@@ -10,7 +10,6 @@ from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .storage import append_log, get_progress, set_progress
 from .post_zapier import post_final_copy
-from .openai_seo import generate_seo_keywords
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
@@ -83,8 +82,6 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     if not sitemap_data:
         sitemap_data = await generate_sitemap(metadata=metadata, userdata=userdata)
 
-    seo_task = asyncio.create_task(generate_seo_keywords(metadata=metadata, userdata=userdata))
-
     if not sitemap_data:
         await log("sitemap_generating")
         sitemap_task = asyncio.create_task(generate_sitemap(metadata, userdata))
@@ -98,13 +95,6 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         await log("sitemap_provided_in_payload")
 
     seo_keywords: List[str] = []
-    try:
-        seo_out = await seo_task
-        seo_keywords = list(seo_out.get("keywords") or [])[:5]
-        await log(f"seo_keywords: {seo_keywords}")
-    except Exception as e:
-        await log(f"seo_exception: {e}")
-        seo_keywords = []
 
     try:
         s3_key = upload_sitemap(metadata, sitemap_data, stamp)
