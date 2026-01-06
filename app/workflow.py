@@ -149,14 +149,22 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             }
 
             env: Optional[Dict[str, Any]] = None
+            copy_log_lines: List[str] = []
             try:
-                env = await asyncio.wait_for(generate_page_with_retries(payload), timeout=PAGE_TIMEOUT_SECONDS)
+                env = await asyncio.wait_for(
+                    generate_page_with_retries(payload, log_lines=copy_log_lines),
+                    timeout=PAGE_TIMEOUT_SECONDS,
+                )
             except asyncio.TimeoutError:
                 await log(f"page_timeout: {path}: {PAGE_TIMEOUT_SECONDS}s")
                 env = None
             except Exception as e:
                 await log(f"page_exception: {path}: {e}")
                 env = None
+            finally:
+                if copy_log_lines:
+                    for line in copy_log_lines:
+                        await log(line)
 
             async with lock:
                 if env is None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from openai import OpenAI, AssistantEventHandler
 from pydantic import TypeAdapter, ValidationError
@@ -53,11 +53,19 @@ def _new_client() -> OpenAI:
     )
 
 
-def run_copy_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
+def run_copy_streaming_blocking(
+    payload: Dict[str, Any],
+    log_lines: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    def _log(line: str) -> None:
+        if log_lines is not None:
+            log_lines.append(line)
+        print(line)
+
     client = _new_client()
 
     thread = client.beta.threads.create()
-    print(f"[copy] thread_id: {thread.id}")
+    _log(f"[copy] thread_id: {thread.id}")
 
     client.beta.threads.messages.create(
         thread_id=thread.id,
@@ -83,9 +91,9 @@ def run_copy_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
         if run_id:
             thread_url = f"https://platform.openai.com/threads/{thread.id}"
             run_url = f"https://platform.openai.com/threads/{thread.id}/runs/{run_id}"
-            print(f"[copy] run_id: {run_id}")
-            print(f"[copy] thread_url: {thread_url}")
-            print(f"[copy] run_url: {run_url}")
+            _log(f"[copy] run_id: {run_id}")
+            _log(f"[copy] thread_url: {thread_url}")
+            _log(f"[copy] run_url: {run_url}")
 
     raw = handler.text()
     data = json.loads(raw)
@@ -107,11 +115,14 @@ def _is_transient_openai_error(e: Exception) -> bool:
     return False
 
 
-async def _call_openai_with_transient_retries(payload: Dict[str, Any]) -> Dict[str, Any]:
+async def _call_openai_with_transient_retries(
+    payload: Dict[str, Any],
+    log_lines: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     last_err: Optional[str] = None
     for attempt in range(1, OPENAI_TRANSIENT_RETRIES + 1):
         try:
-            return await asyncio.to_thread(run_copy_streaming_blocking, payload)
+            return await asyncio.to_thread(run_copy_streaming_blocking, payload, log_lines)
         except Exception as e:
             if _is_transient_openai_error(e) and attempt < OPENAI_TRANSIENT_RETRIES:
                 last_err = str(e)
@@ -121,11 +132,11 @@ async def _call_openai_with_transient_retries(payload: Dict[str, Any]) -> Dict[s
     raise RuntimeError(last_err or "unknown error")
 
 
-async def generate_page_with_retries(payload):
+async def generate_page_with_retries(payload, log_lines: Optional[List[str]] = None):
     last_err = None
     for attempt in range(1, MAX_PAGE_RETRIES + 1):
         try:
-            return await _call_openai_with_transient_retries(payload)
+            return await _call_openai_with_transient_retries(payload, log_lines=log_lines)
         except (json.JSONDecodeError, ValidationError) as e:
             last_err = f"parse/validation error: {e}"
         except Exception as e:

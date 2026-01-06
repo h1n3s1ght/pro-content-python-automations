@@ -393,6 +393,28 @@ async def job_page(job_id: str):
     skipped = prog.get("pages_skipped", "")
     current = prog.get("current", "")
     log_text = "\n".join(logs) if logs else ""
+    thread_run_lines = []
+    seen_pairs = set()
+    for line in logs or []:
+        if ("thread_id" in line) or ("run_id" in line):
+            if line not in seen_pairs:
+                thread_run_lines.append(line)
+                seen_pairs.add(line)
+
+    if thread_run_lines:
+        thread_run_section = """
+          <div style="margin-top:8px; padding:10px; border:1px dashed #e5e7eb; border-radius:8px; background:#f9fafb;">
+            <div style="font-weight:600; font-size:13px; color:#111827;">Thread/Run IDs found in logs</div>
+            <ul style="margin:6px 0 0 16px; padding:0; color:#111827; font-size:12px; line-height:1.5;">
+        """
+        thread_run_section += "".join([f"<li style='margin:2px 0;'>{line}</li>" for line in thread_run_lines])
+        thread_run_section += "</ul></div>"
+    else:
+        thread_run_section = """
+          <div style="margin-top:8px; padding:10px; border:1px dashed #e5e7eb; border-radius:8px; background:#f9fafb; color:#6b7280; font-size:12px;">
+            No thread/run IDs found in the last 300 log lines.
+          </div>
+        """
 
     html = f"""
     <html>
@@ -435,6 +457,7 @@ async def job_page(job_id: str):
 
         <div style="margin-top:14px;">
           <h3 style="margin:0;">Logs (last 300)</h3>
+          {thread_run_section}
           <pre style="margin-top:8px; background:#0b1020; color:#a7f3d0; padding:12px; border-radius:10px; overflow:auto; font-size:12px; white-space:pre-wrap;">{log_text}</pre>
         </div>
       </body>
