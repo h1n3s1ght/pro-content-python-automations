@@ -93,7 +93,11 @@ async def set_progress(job_id: str, data: Dict[str, Any]) -> None:
 
 async def set_payload(job_id: str, payload: Any) -> None:
     r = _client()
-    await r.set(_k(job_id, "payload"), json.dumps(payload, ensure_ascii=False, separators=(",", ":")), ex=PAYLOAD_TTL_SECONDS)
+    await r.set(
+        _k(job_id, "payload"),
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str),
+        ex=PAYLOAD_TTL_SECONDS,
+    )
 
 
 async def get_payload(job_id: str) -> Any:

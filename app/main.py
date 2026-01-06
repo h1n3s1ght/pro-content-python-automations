@@ -45,8 +45,9 @@ async def webhook_pro_form(payload: WebhookInput):
     job_id = str(uuid.uuid4())
     await register_job(job_id)
     await set_status(job_id, "queued")
-    await set_payload(job_id, payload.model_dump())
-    run_full_job.delay(job_id, payload.model_dump())
+    payload_dict = payload.model_dump(by_alias=True, mode="json")
+    await set_payload(job_id, payload_dict)
+    run_full_job.delay(job_id, payload_dict)
     return {"job_id": job_id, "status": "queued"}
 
 
