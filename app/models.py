@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Literal, Union
+from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -237,16 +238,6 @@ AssistantEnvelope = Union[HomeEnvelope, AboutEnvelope, SEOEnvelope, UtilityEnvel
 
 
 # -------------------------
-# Expected Input JSON schema
-# -------------------------
-
-class WebhookInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    metadata: dict
-    userdata: dict
-
-
-# -------------------------
 # Final compiled output schema
 # -------------------------
 class FinalCopyOutput(BaseModel):
@@ -255,3 +246,129 @@ class FinalCopyOutput(BaseModel):
     about: AboutPayload = Field(default_factory=AboutPayload)
     seo_pages: List[SEOPageItem] = Field(default_factory=list)
     utility_pages: List[UtilityAboutItem] = Field(default_factory=list)
+
+
+# -------------------------
+# Input schema for webhook payload
+# -------------------------
+class MetadataInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    business_name: str = ""
+    businessDomain: str = ""
+    submission_datetime: Optional[datetime] = None
+    service_type: str = ""
+
+
+class WhyChooseUsPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    generate_page: bool = False
+    why_choose_us_description: str = ""
+
+
+class TaggedPerson(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = ""
+    position: str = ""
+    bio: str = ""
+    x: float = 0.0
+    y: float = 0.0
+
+
+class TeamPhotoWithTags(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    imageUrl: str = ""
+    taggedPeople: List[TaggedPerson] = Field(default_factory=list)
+
+
+class MeetTheTeamPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    generate_page: bool = False
+    team_introduction: str = ""
+    team_photo_with_tags: TeamPhotoWithTags = Field(default_factory=TeamPhotoWithTags)
+
+
+class AdditionalPagesList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    why_choose_us_page: WhyChooseUsPage = Field(default_factory=WhyChooseUsPage)
+    meet_the_team_page: MeetTheTeamPage = Field(default_factory=MeetTheTeamPage)
+
+
+class GeographicAreaMeta(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = ""
+    label: str = ""
+    lat: str = ""
+    lon: str = ""
+    place_id: str = ""
+    source: str = ""
+    primary: bool = False
+
+
+class GeographicArea(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    geographic_area_meta: GeographicAreaMeta = Field(default_factory=GeographicAreaMeta)
+
+
+class CertificationPartnership(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    cert_item_name: str = ""
+    cert_item_type: str = ""
+    cert_item_image_url: str = ""
+    cert_item_file_url: str = ""
+
+
+class ServiceGuaranteeItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    guarantee_name: str = ""
+    guarantee_type: str = ""
+    guarantee_file_url: str = ""
+    guarantee_description: str = ""
+
+
+class UserdataInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    additional_pages_list: AdditionalPagesList = Field(default_factory=AdditionalPagesList)
+    service_offerings: List[str] = Field(default_factory=list)
+    service_offerings_other: str = ""
+    target_industries: List[str] = Field(default_factory=list)
+    target_industries_other: str = ""
+    geographic_areas: List[GeographicArea] = Field(default_factory=list)
+    company_description: str = ""
+    delivery_model: str = ""
+    delivery_model_other: str = ""
+    pricing_packaging: List[str] = Field(default_factory=list)
+    pricing_packaging_other: str = ""
+    differentiation: str = ""
+    company_goals: List[str] = Field(default_factory=list)
+    company_goals_other: str = ""
+    brand_tone: str = ""
+    brand_tone_other: str = ""
+    certifications_partnerships: List[CertificationPartnership] = Field(default_factory=list)
+    sales_process: str = ""
+    service_guarantee: bool = False
+    service_guarantee_items: List[ServiceGuaranteeItem] = Field(default_factory=list)
+    client_acquisition: str = ""
+    client_acquisition_other: str = ""
+    website_objectives: List[str] = Field(default_factory=list)
+    website_objectives_other: str = ""
+    client_size: str = ""
+    client_challenges: List[str] = Field(default_factory=list)
+    client_challenges_other: str = ""
+    client_frustrations: str = ""
+    client_outcomes: List[str] = Field(default_factory=list)
+    client_outcomes_other: str = ""
+    value_description: str = ""
+    ideal_client: str = ""
+    avoided_clients: str = ""
+    primary_cta: str = ""
+    primary_cta_other: str = ""
+    additional_notes: str = ""
+
+
+class WebhookInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    metadata: MetadataInput = Field(default_factory=MetadataInput)
+    userdata: UserdataInput = Field(default_factory=UserdataInput)
+
+
+WebhookInput.model_rebuild()
