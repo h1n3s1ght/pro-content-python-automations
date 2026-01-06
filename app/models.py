@@ -252,9 +252,9 @@ class FinalCopyOutput(BaseModel):
 # Input schema for webhook payload
 # -------------------------
 class MetadataInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     business_name: str = ""
-    businessDomain: str = ""
+    businessDomain: str = Field(default="", alias="business_domain")
     submission_datetime: Optional[datetime] = None
     service_type: str = ""
 
@@ -366,9 +366,10 @@ class UserdataInput(BaseModel):
 
 
 class WebhookInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
     metadata: MetadataInput = Field(default_factory=MetadataInput)
     userdata: UserdataInput = Field(default_factory=UserdataInput)
+    querystring: Dict[str, Any] = Field(default_factory=dict)
 
 
 WebhookInput.model_rebuild()
