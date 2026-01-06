@@ -12,6 +12,7 @@ from .storage import (
     pause_job,
     resume_job,
 )
+from .tasks import run_resume_job
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 
@@ -56,22 +57,34 @@ def _badge(text: str) -> str:
 async def queue_data():
     job_ids = await list_jobs(200, newest_first=False)
     items = []
+    status_pairs = []
     for jid in job_ids:
         status = await get_status(jid) or "unknown"
+        status_pairs.append((jid, status))
+
+    queue_positions = {
+        jid: idx + 1
+        for idx, (jid, status) in enumerate(
+            [(jid, status) for jid, status in status_pairs if (status or "").lower() == "queued"]
+        )
+    }
+
+    for jid, status in status_pairs:
         prog = await get_progress(jid)
         st = (status or "").lower()
         items.append(
             {
                 "job_id": jid,
                 "status": status,
+                "queue_position": queue_positions.get(jid),
                 "stage": prog.get("stage", ""),
                 "pages_total": prog.get("pages_total", ""),
                 "pages_done": prog.get("pages_done", ""),
                 "pages_failed": prog.get("pages_failed", ""),
                 "current": prog.get("current", ""),
-                "can_cancel": st in ("queued", "paused"),
+                "can_cancel": st in ("queued", "paused", "running", "starting"),
                 "can_move": st in ("queued", "paused"),
-                "can_pause": st == "queued",
+                "can_pause": st in ("queued", "running", "starting"),
                 "can_resume": st == "paused",
             }
         )
@@ -107,6 +120,8 @@ async def pause_job_endpoint(job_id: str):
 @router.post("/job/{job_id}/resume")
 async def resume_job_endpoint(job_id: str):
     ok = await resume_job(job_id)
+    if ok:
+        run_resume_job.delay(job_id)
     return JSONResponse({"ok": ok})
 
 
@@ -142,6 +157,7 @@ async def queue_page():
             <tr style="background:#f9fafb; text-align:left; font-size:13px; color:#111827;">
               <th>Job ID</th>
               <th>Status</th>
+              <th>Que #</th>
               <th>Stage</th>
               <th>Done/Total</th>
               <th>Failed</th>
@@ -150,7 +166,7 @@ async def queue_page():
             </tr>
           </thead>
           <tbody id="queueBody" style="font-size:13px; color:#111827;">
-            <tr><td colspan="7" style="color:#6b7280;">Loading…</td></tr>
+            <tr><td colspan="8" style="color:#6b7280;">Loading…</td></tr>
           </tbody>
         </table>
 
@@ -333,11 +349,12 @@ async def queue_page():
             try {
               const items = await apiJSON("/ui/api/queue");
               if (!items.length) {
-                body.innerHTML = `<tr><td colspan="7" style="color:#6b7280;">No jobs found.</td></tr>`;
+                body.innerHTML = `<tr><td colspan="8" style="color:#6b7280;">No jobs found.</td></tr>`;
               } else {
                 body.innerHTML = items.map(item => {
                   const jid = item.job_id;
                   const status = item.status || "unknown";
+                  const queuePos = item.queue_position || "";
                   const stage = safe(item.stage);
                   const total = safe(item.pages_total);
                   const done = safe(item.pages_done);
@@ -349,6 +366,7 @@ async def queue_page():
                         <a href="/ui/job/${jid}">${jid}</a>
                       </td>
                       <td>${badgeHTML(status)}</td>
+                      <td>${queuePos}</td>
                       <td>${stage}</td>
                       <td>${done}/${total}</td>
                       <td>${failed}</td>

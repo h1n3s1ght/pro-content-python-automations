@@ -8,7 +8,8 @@ from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
-from .storage import append_log, get_progress, set_progress
+from .errors import OperationCanceled, PauseRequested
+from .storage import append_log, get_progress, set_progress, is_canceled, is_paused
 from .post_zapier import post_final_copy
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
@@ -18,6 +19,15 @@ NON_GENERATIVE_PATHS = {
     "/contact-us",
     "/contact-thank-you",
 }
+
+
+async def _ensure_can_continue(job_id: Optional[str]) -> None:
+    if not job_id:
+        return
+    if await is_canceled(job_id):
+        raise OperationCanceled("job canceled by user")
+    if await is_paused(job_id):
+        raise PauseRequested("job paused by user")
 
 
 def _extract_business_name(metadata: Dict[str, Any]) -> str:
@@ -64,6 +74,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         if job_id:
             await _merge_progress(job_id, patch)
 
+    await _ensure_can_continue(job_id)
+
     await log(f"meta_business_name: {business_name or 'MISSING'}")
     await log(f"meta_business_domain: {business_domain or 'MISSING'}")
 
@@ -77,6 +89,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             "current": "",
         }
     )
+    await _ensure_can_continue(job_id)
 
     sitemap_data = webhook_payload.get("sitemap_data")
     sitemap_log_lines: List[str] = []
@@ -89,6 +102,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     if not sitemap_data:
         await log("sitemap_generating")
+        await _ensure_can_continue(job_id)
         sitemap_task = asyncio.create_task(generate_sitemap(metadata, userdata))
         try:
             sitemap_data = await sitemap_task
@@ -138,6 +152,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     async def run_page(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         path = page.get("path", "")
         async with sem:
+            await _ensure_can_continue(job_id)
             await prog({"current": path})
             await log(f"page_start: {path}")
             payload = {
@@ -165,6 +180,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                 if copy_log_lines:
                     for line in copy_log_lines:
                         await log(line)
+                await _ensure_can_continue(job_id)
 
             async with lock:
                 if env is None:
@@ -187,10 +203,12 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             path = str((env or {}).get("path") or "")
             if path:
                 utility_paths.append(path)
+        await _ensure_can_continue(job_id)
     await log(f"envelope_counts: {kind_counts}")
     if utility_paths:
         await log(f"utility_paths: {utility_paths}")
 
+    await _ensure_can_continue(job_id)
     await prog({"stage": "compile"})
     final_copy = compile_final(envelopes)
 

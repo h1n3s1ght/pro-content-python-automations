@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 
 from .models import WebhookInput
 from .tasks import run_full_job
-from .storage import get_result, get_status, register_job, set_status
+from .storage import get_result, get_status, register_job, set_status, set_payload
 from .ui import router as ui_router
 
 load_dotenv()
@@ -45,6 +45,7 @@ async def webhook_pro_form(payload: WebhookInput):
     job_id = str(uuid.uuid4())
     await register_job(job_id)
     await set_status(job_id, "queued")
+    await set_payload(job_id, payload.model_dump())
     run_full_job.delay(job_id, payload.model_dump())
     return {"job_id": job_id, "status": "queued"}
 
