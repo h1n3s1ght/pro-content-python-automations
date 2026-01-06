@@ -421,12 +421,15 @@ async def job_page(job_id: str):
 
     if thread_run_lines:
         thread_run_section = """
-          <div style="margin-top:8px; padding:10px; border:1px dashed #e5e7eb; border-radius:8px; background:#f9fafb;">
-            <div style="font-weight:600; font-size:13px; color:#111827;">Thread/Run IDs found in logs</div>
-            <ul style="margin:6px 0 0 16px; padding:0; color:#111827; font-size:12px; line-height:1.5;">
+          <details style="margin-top:8px; padding:10px; border:1px dashed #e5e7eb; border-radius:8px; background:#f9fafb;" >
+            <summary style="cursor:pointer; font-weight:600; font-size:13px; color:#111827; list-style:none; display:flex; align-items:center; gap:6px;">
+              <span>Thread/Run IDs found in logs</span>
+              <span style="font-size:11px; color:#6b7280;">(click to expand)</span>
+            </summary>
+            <ul style="margin:8px 0 0 16px; padding:0; color:#111827; font-size:12px; line-height:1.5;">
         """
         thread_run_section += "".join([f"<li style='margin:2px 0;'>{line}</li>" for line in thread_run_lines])
-        thread_run_section += "</ul></div>"
+        thread_run_section += "</ul></details>"
     else:
         thread_run_section = """
           <div style="margin-top:8px; padding:10px; border:1px dashed #e5e7eb; border-radius:8px; background:#f9fafb; color:#6b7280; font-size:12px;">
