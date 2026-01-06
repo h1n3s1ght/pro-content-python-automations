@@ -44,6 +44,37 @@ async def list_jobs(limit: int = 100, newest_first: bool = True) -> List[str]:
     return await r.zrange("jobs:index", 0, limit - 1)
 
 
+async def list_jobs_with_scores(
+    limit: int = 100,
+    newest_first: bool = True,
+    min_score: Optional[float] = None,
+    max_score: Optional[float] = None,
+) -> List[Tuple[str, float]]:
+    await purge_inactive()
+    r = _client()
+    min_s = min_score if min_score is not None else "-inf"
+    max_s = max_score if max_score is not None else "+inf"
+
+    if min_score is not None or max_score is not None:
+        if newest_first:
+            items = await r.zrevrangebyscore("jobs:index", max_s, min_s, start=0, num=limit, withscores=True)
+        else:
+            items = await r.zrangebyscore("jobs:index", min_s, max_s, start=0, num=limit, withscores=True)
+    else:
+        if newest_first:
+            items = await r.zrevrange("jobs:index", 0, limit - 1, withscores=True)
+        else:
+            items = await r.zrange("jobs:index", 0, limit - 1, withscores=True)
+
+    out: List[Tuple[str, float]] = []
+    for jid, sc in items or []:
+        try:
+            out.append((jid, float(sc)))
+        except Exception:
+            continue
+    return out
+
+
 async def set_status(job_id: str, status: str) -> None:
     r = _client()
     await r.set(_k(job_id, "status"), status, ex=JOB_TTL_SECONDS)
