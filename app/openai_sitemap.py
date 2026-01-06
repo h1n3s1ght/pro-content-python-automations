@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI, AssistantEventHandler
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,9 +116,17 @@ def _normalize_sitemap_output(data: Any) -> Dict[str, Any]:
     return {"sitemap_data": sitemap_data}
 
 
-def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
+def run_sitemap_streaming_blocking(
+    payload: Dict[str, Any],
+    log_lines: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    def _log(line: str) -> None:
+        if log_lines is not None:
+            log_lines.append(line)
+        print(line)
+
     thread = client.beta.threads.create()
-    print(f"[sitemap] thread_id: {thread.id}")
+    _log(f"[sitemap] thread_id: {thread.id}")
 
     client.beta.threads.messages.create(
         thread_id=thread.id,
@@ -144,9 +152,9 @@ def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
         if run_id:
             thread_url = f"https://platform.openai.com/threads/{thread.id}"
             run_url = f"https://platform.openai.com/threads/{thread.id}/runs/{run_id}"
-            print(f"[sitemap] run_id: {run_id}")
-            print(f"[sitemap] thread_url: {thread_url}")
-            print(f"[sitemap] run_url: {run_url}")
+            _log(f"[sitemap] run_id: {run_id}")
+            _log(f"[sitemap] thread_url: {thread_url}")
+            _log(f"[sitemap] run_url: {run_url}")
 
     raw = handler.text()
     data = json.loads(raw)
@@ -156,5 +164,8 @@ def run_sitemap_streaming_blocking(payload: Dict[str, Any]) -> Dict[str, Any]:
     return json.loads(validated.model_dump_json())
 
 
-async def generate_sitemap_streaming(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return await asyncio.to_thread(run_sitemap_streaming_blocking, payload)
+async def generate_sitemap_streaming(
+    payload: Dict[str, Any],
+    log_lines: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    return await asyncio.to_thread(run_sitemap_streaming_blocking, payload, log_lines)

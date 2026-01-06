@@ -79,8 +79,13 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     )
 
     sitemap_data = webhook_payload.get("sitemap_data")
+    sitemap_log_lines: List[str] = []
     if not sitemap_data:
-        sitemap_data = await generate_sitemap(metadata=metadata, userdata=userdata)
+        sitemap_data = await generate_sitemap(
+            metadata=metadata,
+            userdata=userdata,
+            log_lines=sitemap_log_lines,
+        )
 
     if not sitemap_data:
         await log("sitemap_generating")
@@ -93,6 +98,10 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             sitemap_data = {}
     else:
         await log("sitemap_provided_in_payload")
+
+    if sitemap_log_lines:
+        for line in sitemap_log_lines:
+            await log(line)
 
     seo_keywords: List[str] = []
 
