@@ -133,68 +133,9 @@ async def queue_page():
               <div class="text-muted small">/ui/queue</div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <button id="filterBtn" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#filterModal">Filters</button>
               <button id="refreshBtn" class="btn btn-outline-secondary btn-sm">Refresh</button>
               <div class="text-muted small" id="lastUpdated"></div>
-            </div>
-          </div>
-
-          <div class="card mb-3">
-            <div class="card-body d-flex flex-wrap align-items-center gap-3">
-              <div class="d-flex flex-wrap align-items-center gap-2">
-                <strong class="me-2">Statuses:</strong>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="queued" checked>
-                  <span class="form-check-label">Queued</span>
-                </label>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="running" checked>
-                  <span class="form-check-label">Running</span>
-                </label>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="paused" checked>
-                  <span class="form-check-label">Paused</span>
-                </label>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="completed" checked>
-                  <span class="form-check-label">Completed</span>
-                </label>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="failed" checked>
-                  <span class="form-check-label">Failed</span>
-                </label>
-                <label class="form-check form-check-inline mb-0">
-                  <input class="form-check-input statusFilter" type="checkbox" value="canceled" checked>
-                  <span class="form-check-label">Canceled</span>
-                </label>
-              </div>
-              <div class="d-flex flex-wrap align-items-center gap-2">
-                <strong class="me-2">Time window:</strong>
-                <label class="d-flex align-items-center gap-2 mb-0">
-                  <span>From</span>
-                  <select id="fromHours" class="form-select form-select-sm">
-                    <option value="0" selected>Now</option>
-                    <option value="1">1h ago</option>
-                    <option value="2">2h ago</option>
-                    <option value="4">4h ago</option>
-                    <option value="6">6h ago</option>
-                    <option value="12">12h ago</option>
-                    <option value="24">24h ago</option>
-                  </select>
-                </label>
-                <span>to</span>
-                <label class="d-flex align-items-center gap-2 mb-0">
-                  <select id="toHours" class="form-select form-select-sm">
-                    <option value="">Any time</option>
-                    <option value="1">1h ago</option>
-                    <option value="2">2h ago</option>
-                    <option value="4">4h ago</option>
-                    <option value="6">6h ago</option>
-                    <option value="12">12h ago</option>
-                    <option value="24">24h ago</option>
-                  </select>
-                </label>
-              </div>
-              <button id="applyFilters" class="btn btn-primary btn-sm">Apply</button>
             </div>
           </div>
 
@@ -223,6 +164,82 @@ async def queue_page():
           </div>
         </div>
 
+        <!-- Filters Modal -->
+        <div class="modal fade" id="filterModal" tabindex="-1" aria-labelledby="filterModalLabel" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="filterModalLabel">Filters</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <div class="mb-3">
+                  <div class="fw-semibold mb-1">Statuses</div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="queued">
+                      <span class="form-check-label">Queued</span>
+                    </label>
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="running">
+                      <span class="form-check-label">Running</span>
+                    </label>
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="paused">
+                      <span class="form-check-label">Paused</span>
+                    </label>
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="completed">
+                      <span class="form-check-label">Completed</span>
+                    </label>
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="failed">
+                      <span class="form-check-label">Failed</span>
+                    </label>
+                    <label class="form-check form-check-inline mb-0">
+                      <input class="form-check-input statusFilter" type="checkbox" value="canceled">
+                      <span class="form-check-label">Canceled</span>
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <div class="fw-semibold mb-1">Time window</div>
+                  <div class="d-flex flex-wrap align-items-center gap-2">
+                    <label class="d-flex align-items-center gap-2 mb-0">
+                      <span>From</span>
+                      <select id="fromHours" class="form-select form-select-sm">
+                        <option value="0">Now</option>
+                        <option value="1">1h ago</option>
+                        <option value="2">2h ago</option>
+                        <option value="4">4h ago</option>
+                        <option value="6">6h ago</option>
+                        <option value="12">12h ago</option>
+                        <option value="24">24h ago</option>
+                      </select>
+                    </label>
+                    <span>to</span>
+                    <label class="d-flex align-items-center gap-2 mb-0">
+                      <select id="toHours" class="form-select form-select-sm">
+                        <option value="">Any time</option>
+                        <option value="1">1h ago</option>
+                        <option value="2">2h ago</option>
+                        <option value="4">4h ago</option>
+                        <option value="6">6h ago</option>
+                        <option value="12">12h ago</option>
+                        <option value="24">24h ago</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="clearFilters">Clear all</button>
+                <button type="button" class="btn btn-primary btn-sm" id="applyFilters" data-bs-dismiss="modal">Apply</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
         <script>
           // Badges
@@ -238,6 +255,43 @@ async def queue_page():
           };
 
           const safe = (v) => (v === null || v === undefined) ? "" : String(v);
+
+          const FILTER_STORAGE_KEY = "queueFiltersV1";
+          const DEFAULT_FILTERS = {
+            statuses: ["queued", "running", "paused", "completed", "failed", "canceled"],
+            fromH: "0",
+            toH: "",
+          };
+
+          function loadFilters() {
+            try {
+              const raw = localStorage.getItem(FILTER_STORAGE_KEY);
+              if (!raw) return { ...DEFAULT_FILTERS };
+              const parsed = JSON.parse(raw);
+              return {
+                statuses: Array.isArray(parsed.statuses) ? parsed.statuses : DEFAULT_FILTERS.statuses,
+                fromH: parsed.fromH ?? DEFAULT_FILTERS.fromH,
+                toH: parsed.toH ?? DEFAULT_FILTERS.toH,
+              };
+            } catch (_) {
+              return { ...DEFAULT_FILTERS };
+            }
+          }
+
+          function saveFilters(filters) {
+            try {
+              localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filters));
+            } catch (_) {}
+          }
+
+          function setFiltersUI(filters) {
+            const statusSet = new Set(filters.statuses || []);
+            document.querySelectorAll(".statusFilter").forEach((el) => {
+              el.checked = statusSet.has(el.value);
+            });
+            document.getElementById("fromHours").value = filters.fromH ?? DEFAULT_FILTERS.fromH;
+            document.getElementById("toHours").value = filters.toH ?? DEFAULT_FILTERS.toH;
+          }
 
           function getSelectedStatuses() {
             return Array.from(document.querySelectorAll(".statusFilter:checked")).map(el => el.value);
@@ -470,12 +524,27 @@ async def queue_page():
           }
 
           document.getElementById("refreshBtn").addEventListener("click", () => refreshQueue());
-          document.getElementById("applyFilters").addEventListener("click", () => refreshQueue());
+          document.getElementById("applyFilters").addEventListener("click", () => {
+            const filters = currentFilters();
+            saveFilters(filters);
+            renderFilteredItems();
+            refreshQueue();
+          });
+          document.getElementById("clearFilters").addEventListener("click", () => {
+            setFiltersUI(DEFAULT_FILTERS);
+            saveFilters(DEFAULT_FILTERS);
+            renderFilteredItems();
+          });
+          document.getElementById("filterModal").addEventListener("show.bs.modal", () => {
+            const filters = loadFilters();
+            setFiltersUI(filters);
+          });
           window.cancelJob = cancelJob;
           window.pauseJob = pauseJob;
           window.resumeJob = resumeJob;
           window.moveJob = moveJob;
 
+          setFiltersUI(loadFilters());
           refreshQueue();
           setInterval(refreshQueue, 30000);
         </script>
