@@ -382,38 +382,15 @@ async def queue_page():
             await refreshQueue();
           }
 
-          // --- Icon SVGs (inline) ---
+          // --- Icons (Bootstrap Icons) ---
           const ICONS = {
-            cancel: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="none" d="M0 0h24v24H0V0z" opacity=".87"></path>
-              <path d="M12 2C6.47 2 2 6.47 2 12s4.47 10 10 10 10-4.47 10-10S17.53 2 12 2zm4.3 14.3c-.39.39-1.02.39-1.41 0L12 13.41 9.11 16.3c-.39.39-1.02.39-1.41 0-.39-.39-.39-1.02 0-1.41L10.59 12 7.7 9.11c-.39-.39-.39-1.02 0-1.41.39-.39 1.02-.39 1.41 0L12 10.59l2.89-2.89c.39-.39 1.02-.39 1.41 0 .39.39.39 1.02 0 1.41L13.41 12l2.89 2.89c.38.38.38 1.02 0 1.41z"></path>
-            </svg>`,
-            pause: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14c-.55 0-1-.45-1-1V9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1zm4 0c-.55 0-1-.45-1-1V9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1z"></path>
-            </svg>`,
-            up: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="currentColor" fill-rule="evenodd" d="M3.5 12C3.5 16.6944 7.30558 20.5 12 20.5C16.6944 20.5 20.5 16.6944 20.5 12C20.5 7.30558 16.6944 3.5 12 3.5C7.30558 3.5 3.5 7.30558 3.5 12ZM12 21.5C6.75329 21.5 2.5 17.2467 2.5 12C2.5 6.75329 6.7533 2.5 12 2.5C17.2467 2.5 21.5 6.7533 21.5 12C21.5 17.2467 17.2467 21.5 12 21.5Z" clip-rule="evenodd"></path>
-              <path fill="currentColor" fill-rule="evenodd" d="M12 17.5C11.7239 17.5 11.5 17.2761 11.5 17L11.5 7.5C11.5 7.22386 11.7239 7 12 7C12.2761 7 12.5 7.22386 12.5 7.5L12.5 17C12.5 17.2761 12.2761 17.5 12 17.5Z" clip-rule="evenodd"></path>
-              <path fill="currentColor" fill-rule="evenodd" d="M8.14645 10.8536C7.95118 10.6583 7.95118 10.3417 8.14645 10.1464L11.6464 6.64645C11.8417 6.45118 12.1583 6.45118 12.3536 6.64645L15.8536 10.1464C16.0488 10.3417 16.0488 10.6583 15.8536 10.8536C15.6583 11.0488 15.3417 11.0488 15.1464 10.8536L12 7.70711L8.85355 10.8536C8.65829 11.0488 8.34171 11.0488 8.14645 10.8536Z" clip-rule="evenodd"></path>
-            </svg>`,
-            down: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" aria-hidden="true">
-              <path d="M50,95.8C24.8,95.8,4.3,75.2,4.3,50S24.8,4.3,50,4.3S95.8,24.8,95.8,50S75.2,95.8,50,95.8z M50,9.3
-                C27.5,9.3,9.3,27.5,9.3,50c0,22.5,18.3,40.8,40.7,40.8c22.5,0,40.8-18.3,40.8-40.8C90.8,27.5,72.5,9.3,50,9.3z"></path>
-              <path d="M52.5,70.1V29.9c0-1.4-1.1-2.5-2.5-2.5s-2.5,1.1-2.5,2.5v40.3c0,1.4,1.1,2.5,2.5,2.5S52.5,71.5,52.5,70.1z"></path>
-              <path d="M69.7,53c0-0.6-0.2-1.3-0.7-1.8c-1-1-2.6-1-3.5,0L50,66.6L34.6,51.2c-1-1-2.6-1-3.5,0c-1,1-1,2.6,0,3.5
-                l17.2,17.2c0.5,0.5,1.1,0.7,1.8,0.7s1.3-0.3,1.8-0.7l17.2-17.2C69.4,54.2,69.7,53.6,69.7,53z"></path>
-            </svg>`,
-            top: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12.71,6.29a1,1,0,0,0-.33-.21,1,1,0,0,0-.76,0,1,1,0,0,0-.33.21l-4,4a1,1,0,1,0,1.42,1.42L11,9.41V21a1,1,0,0,0,2,0V9.41l2.29,2.3a1,1,0,0,0,1.42,0,1,1,0,0,0,0-1.42ZM19,2H5A1,1,0,0,0,5,4H19a1,1,0,0,0,0-2Z"></path>
-            </svg>`,
-            bottom: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path fill="none" d="M0 0h24v24H0z"></path>
-              <path stroke="currentColor" stroke-linecap="round" stroke-width="1.5" d="M12 5 12 17M16 13 12 17M8 13 12 17M16 19H8"></path>
-            </svg>`,
-            // simple "play" icon for Resume
-            resume: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1.2 6.8v6.4L16 12l-5.2-3.2z"></path>
-            </svg>`
+            cancel: `<i class="bi bi-x-lg"></i>`,
+            pause: `<i class="bi bi-pause-fill"></i>`,
+            resume: `<i class="bi bi-play-fill"></i>`,
+            up: `<i class="bi bi-chevron-up"></i>`,
+            down: `<i class="bi bi-chevron-down"></i>`,
+            top: `<i class="bi bi-arrow-up-square"></i>`,
+            bottom: `<i class="bi bi-arrow-down-square"></i>`,
           };
 
           const iconBtnStyle = (enabled) => `
