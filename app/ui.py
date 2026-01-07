@@ -395,13 +395,13 @@ async def queue_page():
           };
 
           const iconBtnStyle = (enabled) => `
-            width:34px;height:34px;
+            width:40px;height:40px;
             display:inline-flex;align-items:center;justify-content:center;
             padding:0;
           `;
 
           const iconWrapStyle = `
-            width:18px;height:18px;display:block;
+            width:22px;height:22px;display:block;font-size:20px;font-weight:700;line-height:1;
           `;
 
           function iconButton({ title, enabled, onClick, iconKey }) {
@@ -410,7 +410,8 @@ async def queue_page():
             return `
               <button title="${title}" aria-label="${title}"
                 class="btn btn-sm ${enabled ? 'btn-outline-secondary' : 'btn-outline-secondary disabled'}"
-                style="${iconBtnStyle(enabled)}" ${disabledAttr} ${handlerAttr}>
+                style="${iconBtnStyle(enabled)}" ${disabledAttr} ${handlerAttr}
+                data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${title}">
                 <span style="${iconWrapStyle}">${ICONS[iconKey]}</span>
               </button>
             `;
@@ -518,6 +519,7 @@ async def queue_page():
             const filters = loadFilters();
             setFiltersUI(filters);
           });
+          const tooltips = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]')).map(el => new bootstrap.Tooltip(el));
           window.cancelJob = cancelJob;
           window.pauseJob = pauseJob;
           window.resumeJob = resumeJob;
