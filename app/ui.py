@@ -661,10 +661,10 @@ async def job_page(job_id: str):
           const logPre = document.getElementById("logText");
           const debugToggle = document.getElementById("debugToggle");
 
-          function updateLogs() {
+          function updateLogs() {{
             const useDebug = debugToggle.checked;
             logPre.textContent = useDebug ? fullLogs : simpleLogs;
-          }
+          }}
           debugToggle.addEventListener("change", updateLogs);
           updateLogs();
         </script>
