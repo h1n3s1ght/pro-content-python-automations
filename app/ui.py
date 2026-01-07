@@ -43,6 +43,9 @@ def _badge(text: str) -> str:
 async def queue_data():
     now = time.time()
     twenty_four_hours_ago = now - (24 * 3600)
+    capacity = int(os.getenv("CELERY_CONCURRENCY", os.getenv("WEB_CONCURRENCY", "2")) or "2")
+    if capacity < 1:
+        capacity = 1
 
     items = []
     status_pairs = []
@@ -52,22 +55,36 @@ async def queue_data():
         status = await get_status(jid) or "unknown"
         status_pairs.append((jid, status, score))
 
-    queue_positions = {
-        jid: idx + 1
-        for idx, (jid, status, _score) in enumerate(
-            [(jid, status) for jid, status, _score in status_pairs if (status or "").lower() == "queued"]
-        )
-    }
-
+    running_slots = 0
+    queue_index = 0
     for jid, status, score in status_pairs:
         st = (status or "").lower()
+        display_status = status
+        is_running_like = st in ("running", "starting")
+
+        if is_running_like:
+            running_slots += 1
+            if running_slots > capacity:
+                display_status = "queued"
+                st = "queued"
+                queue_index += 1
+                queue_pos = queue_index
+            else:
+                queue_pos = None
+        elif st in ("queued", "paused"):
+            queue_index += 1
+            queue_pos = queue_index
+        else:
+            queue_pos = None
+
         prog = await get_progress(jid)
         items.append(
             {
                 "job_id": jid,
                 "status": status,
+                "display_status": display_status,
                 "created_at": int(score) if score is not None else None,
-                "queue_position": queue_positions.get(jid),
+                "queue_position": queue_pos,
                 "stage": prog.get("stage", ""),
                 "pages_total": prog.get("pages_total", ""),
                 "pages_done": prog.get("pages_done", ""),
@@ -323,7 +340,7 @@ async def queue_page():
             const toVal = toH === "" ? null : parseFloat(toH);
 
             const filtered = allItems.filter(item => {
-              const st = (item.status || "").toLowerCase();
+              const st = (item.display_status || item.status || "").toLowerCase();
               if (statusSet.size && !statusSet.has(st)) return false;
               const createdAt = item.created_at || 0;
               const hoursAgo = (nowSec - createdAt) / 3600;
@@ -339,7 +356,7 @@ async def queue_page():
 
             body.innerHTML = filtered.map(item => {
               const jid = item.job_id;
-              const status = item.status || "unknown";
+              const status = item.display_status || item.status || "unknown";
               const queuePos = item.queue_position || "";
               const stage = safe(item.stage);
               const total = safe(item.pages_total);
