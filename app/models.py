@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Literal, Union
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # -------------------------
@@ -182,11 +182,25 @@ class SEOFields(BaseModel):
 
 class SEOPageItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    seo_page_type: Literal["service", "industry", "location"] = "service"
+    seo_page_type: str = "service"
     post_title: str = ""
     post_name: str = ""
     post_status: str = "publish"
     fields: SEOFields = Field(default_factory=SEOFields)
+
+    @field_validator("seo_page_type", mode="before")
+    @classmethod
+    def _normalize_seo_page_type(cls, v):
+        t = str(v or "").strip().lower()
+        mapping = {
+            "service": "service",
+            "seo-service": "service",
+            "industry": "industry",
+            "seo-industry": "industry",
+            "location": "location",
+            "seo-location": "location",
+        }
+        return mapping.get(t, "service")
 
 
 # -------------------------
