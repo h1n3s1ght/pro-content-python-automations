@@ -1,4 +1,5 @@
 import time
+import json
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -567,6 +568,23 @@ async def job_page(job_id: str):
     skipped = prog.get("pages_skipped", "")
     current = prog.get("current", "")
     log_text = "\n".join(logs) if logs else ""
+
+    def _level_of(line: str) -> str:
+        if isinstance(line, str) and len(line) >= 3 and line.startswith("[") and line[2] == "]":
+            return line[1].upper()
+        return "I"
+
+    simple_logs: list[str] = []
+    debug_logs: list[str] = []
+    for line in logs or []:
+        lvl = _level_of(line)
+        if lvl == "D":
+            debug_logs.append(line)
+        else:
+            simple_logs.append(line)
+
+    simple_log_text = "\n".join(simple_logs)
+    full_log_text = log_text
     thread_run_lines = []
     seen_pairs = set()
     for line in logs or []:
@@ -642,15 +660,34 @@ async def job_page(job_id: str):
 
           <div class="card">
             <div class="card-header">
-              <h5 class="mb-0">Logs (last 300)</h5>
+              <div class="d-flex align-items-center justify-content-between">
+                <h5 class="mb-0">Logs (last 300)</h5>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="debugToggle">
+                  <label class="form-check-label" for="debugToggle">Debugging</label>
+                </div>
+              </div>
             </div>
             <div class="card-body">
               {thread_run_section}
-              <pre class="bg-dark text-success p-3 rounded small mt-3 mb-0" style="overflow:auto; white-space:pre-wrap;">{log_text}</pre>
+              <pre id="logText" class="bg-dark text-success p-3 rounded small mt-3 mb-0" style="overflow:auto; white-space:pre-wrap;">{simple_log_text}</pre>
             </div>
           </div>
         </div>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+          const fullLogs = {json.dumps(full_log_text)};
+          const simpleLogs = {json.dumps(simple_log_text)};
+          const logPre = document.getElementById("logText");
+          const debugToggle = document.getElementById("debugToggle");
+
+          function updateLogs() {
+            const useDebug = debugToggle.checked;
+            logPre.textContent = useDebug ? fullLogs : simpleLogs;
+          }
+          debugToggle.addEventListener("change", updateLogs);
+          updateLogs();
+        </script>
       </body>
     </html>
     """

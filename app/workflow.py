@@ -9,7 +9,8 @@ from .openai_copy import generate_page_with_retries
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .errors import OperationCanceled, PauseRequested
-from .storage import append_log, get_progress, set_progress, is_canceled, is_paused
+from .logging_utils import log_info, log_debug, log_warn, log_error
+from .storage import get_progress, set_progress, is_canceled, is_paused
 from .post_zapier import post_final_copy
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
@@ -66,9 +67,21 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     business_name = _extract_business_name(metadata)
     business_domain = _extract_business_domain(metadata)
 
-    async def log(msg: str) -> None:
+    async def log_i(msg: str) -> None:
         if job_id:
-            await append_log(job_id, msg)
+            await log_info(job_id, msg)
+
+    async def log_d(msg: str) -> None:
+        if job_id:
+            await log_debug(job_id, msg)
+
+    async def log_w(msg: str) -> None:
+        if job_id:
+            await log_warn(job_id, msg)
+
+    async def log_e(msg: str) -> None:
+        if job_id:
+            await log_error(job_id, msg)
 
     async def prog(patch: Dict[str, Any]) -> None:
         if job_id:
@@ -76,8 +89,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     await _ensure_can_continue(job_id)
 
-    await log(f"meta_business_name: {business_name or 'MISSING'}")
-    await log(f"meta_business_domain: {business_domain or 'MISSING'}")
+    await log_i(f"meta_business_name: {business_name or 'MISSING'}")
+    await log_i(f"meta_business_domain: {business_domain or 'MISSING'}")
 
     await prog(
         {
@@ -101,29 +114,29 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         )
 
     if not sitemap_data:
-        await log("sitemap_generating")
+        await log_i("sitemap_generating")
         await _ensure_can_continue(job_id)
         sitemap_task = asyncio.create_task(generate_sitemap(metadata, userdata))
         try:
             sitemap_data = await sitemap_task
-            await log("sitemap_generated")
+            await log_i("sitemap_generated")
         except Exception as e:
-            await log(f"sitemap_exception: {e}")
+            await log_e(f"sitemap_exception: {e}")
             sitemap_data = {}
     else:
-        await log("sitemap_provided_in_payload")
+        await log_i("sitemap_provided_in_payload")
 
     if sitemap_log_lines:
         for line in sitemap_log_lines:
-            await log(line)
+            await log_d(line)
 
     seo_keywords: List[str] = []
 
     try:
         s3_key = upload_sitemap(metadata, sitemap_data, stamp)
-        await log(f"sitemap_uploaded: {s3_key}")
+        await log_i(f"sitemap_uploaded: {s3_key}")
     except Exception as e:
-        await log(f"sitemap_upload_failed: {e}")
+        await log_w(f"sitemap_upload_failed: {e}")
 
     rows: List[Dict[str, Any]] = list((sitemap_data or {}).get("rows") or [])
 
@@ -154,7 +167,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         async with sem:
             await _ensure_can_continue(job_id)
             await prog({"current": path})
-            await log(f"page_start: {path}")
+            await log_i(f"page_start: {path}")
             payload = {
                 "metadata": metadata,
                 "userdata": userdata_for_copy,
@@ -171,24 +184,24 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     timeout=PAGE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                await log(f"page_timeout: {path}: {PAGE_TIMEOUT_SECONDS}s")
+                await log_w(f"page_timeout: {path}: {PAGE_TIMEOUT_SECONDS}s")
                 env = None
             except Exception as e:
-                await log(f"page_exception: {path}: {e}")
+                await log_e(f"page_exception: {path}: {e}")
                 env = None
             finally:
                 if copy_log_lines:
                     for line in copy_log_lines:
-                        await log(line)
+                        await log_d(line)
                 await _ensure_can_continue(job_id)
 
             async with lock:
                 if env is None:
                     counters["failed"] += 1
-                    await log(f"page_failed: {path}")
+                    await log_w(f"page_failed: {path}")
                 else:
                     counters["done"] += 1
-                    await log(f"page_done: {path}")
+                    await log_i(f"page_done: {path}")
                 await prog({"pages_done": counters["done"], "pages_failed": counters["failed"]})
             return env
 
@@ -204,9 +217,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             if path:
                 utility_paths.append(path)
         await _ensure_can_continue(job_id)
-    await log(f"envelope_counts: {kind_counts}")
+    await log_i(f"envelope_counts: {kind_counts}")
     if utility_paths:
-        await log(f"utility_paths: {utility_paths}")
+        await log_i(f"utility_paths: {utility_paths}")
 
     await _ensure_can_continue(job_id)
     await prog({"stage": "compile"})
@@ -214,19 +227,19 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     try:
         s3_key = upload_copy(metadata, final_copy, stamp)
-        await log(f"copy_uploaded: {s3_key}")
+        await log_i(f"copy_uploaded: {s3_key}")
     except Exception as e:
-        await log(f"copy_upload_failed: {e}")
+        await log_w(f"copy_upload_failed: {e}")
 
     if business_name and business_domain:
-        await log(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
+        await log_i(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
         try:
             ok, msg = await post_final_copy(final_copy=final_copy, business_name=business_name, business_domain=business_domain)
-            await log(f"zapier:{msg}")
+            await log_i(f"zapier:{msg}")
         except Exception as e:
-            await log(f"zapier_exception: {e}")
+            await log_e(f"zapier_exception: {e}")
     else:
-        await log("zapier_skipped: missing_business_metadata")
+        await log_i("zapier_skipped: missing_business_metadata")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy

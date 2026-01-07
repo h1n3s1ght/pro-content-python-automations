@@ -157,6 +157,11 @@ async def get_progress(job_id: str) -> Dict[str, Any]:
 async def append_log(job_id: str, line: str) -> None:
     r = _client()
     key = _k(job_id, "log")
+    if not isinstance(line, str):
+        line = str(line)
+    # Ensure level prefix exists: [I]/[D]/[W]/[E]/[*]
+    if not (len(line) >= 3 and line.startswith("[") and line[2] == "]"):
+        line = f"[I] {line}"
     await r.rpush(key, line)
     await r.expire(key, JOB_TTL_SECONDS)
 
