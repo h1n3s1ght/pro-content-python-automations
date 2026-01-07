@@ -570,6 +570,9 @@ async def job_page(job_id: str):
                 thread_run_lines.append(line)
                 seen_pairs.add(line)
 
+    full_logs_json = json.dumps(full_log_text)
+    simple_logs_json = json.dumps(simple_log_text)
+
     if thread_run_lines:
         thread_items = "".join([f"<li class='list-group-item py-1 px-2'>{line}</li>" for line in thread_run_lines])
         thread_run_section = f"""
@@ -653,8 +656,8 @@ async def job_page(job_id: str):
         </div>
         <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
         <script>
-          const fullLogs = {json.dumps(full_log_text)};
-          const simpleLogs = {json.dumps(simple_log_text)};
+          const fullLogs = {full_logs_json};
+          const simpleLogs = {simple_logs_json};
           const logPre = document.getElementById("logText");
           const debugToggle = document.getElementById("debugToggle");
 
