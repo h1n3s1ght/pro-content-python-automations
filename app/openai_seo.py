@@ -172,11 +172,11 @@ def _run_assistant_sync(*, assistant_id: str, user_json_input: Dict[str, Any], d
             return {"ok": False, "error": f"assistant_run_{run.status}", "keywords": [], "raw": raw}
 
 
-async def generate_seo_keywords(*, metadata: Dict[str, Any], userdata: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_seo_keywords(*, metadata: Dict[str, Any], user_data: Dict[str, Any]) -> Dict[str, Any]:
     domain_url = _extract_domain(metadata)
     user_json_input = {
         "metadata": metadata or {},
-        "userdata": userdata or {},
+        "userdata": user_data or {},
         "domain_url": domain_url,
     }
 

@@ -61,7 +61,12 @@ async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
 
 async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
     metadata = webhook_payload.get("metadata") or {}
-    userdata = webhook_payload.get("userdata") or {}
+    user_data = (
+        webhook_payload.get("user_data")
+        or webhook_payload.get("userdata")
+        or webhook_payload.get("userData")
+        or {}
+    )
     stamp = datetime_cst_stamp()
 
     business_name = _extract_business_name(metadata)
@@ -109,14 +114,14 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     if not sitemap_data:
         sitemap_data = await generate_sitemap(
             metadata=metadata,
-            userdata=userdata,
+            user_data=user_data,
             log_lines=sitemap_log_lines,
         )
 
     if not sitemap_data:
         await log_i("sitemap_generating")
         await _ensure_can_continue(job_id)
-        sitemap_task = asyncio.create_task(generate_sitemap(metadata, userdata))
+        sitemap_task = asyncio.create_task(generate_sitemap(metadata, user_data))
         try:
             sitemap_data = await sitemap_task
             await log_i("sitemap_generated")
@@ -159,8 +164,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     lock = asyncio.Lock()
     counters = {"done": 0, "failed": 0}
 
-    userdata_for_copy = dict(userdata or {})
-    userdata_for_copy["seo_keywords"] = seo_keywords
+    user_data_for_copy = dict(user_data or {})
+    user_data_for_copy["seo_keywords"] = seo_keywords
 
     async def run_page(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         path = page.get("path", "")
@@ -170,7 +175,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             await log_i(f"page_start: {path}")
             payload = {
                 "metadata": metadata,
-                "userdata": userdata_for_copy,
+                "userdata": user_data_for_copy,
                 "sitemap_data": sitemap_data,
                 "this_page": page,
                 "seo_keywords": seo_keywords,

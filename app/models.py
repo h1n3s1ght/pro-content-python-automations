@@ -1,7 +1,22 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Literal, Union
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator, AliasChoices
+
+from .webhook_utils import normalize_webhook_payload
+
+
+def _to_camel(string: str) -> str:
+    parts = string.split("_")
+    return parts[0] + "".join(word.capitalize() for word in parts[1:])
+
+
+class WebhookBaseModel(BaseModel):
+    model_config = ConfigDict(
+        extra="ignore",
+        populate_by_name=True,
+        alias_generator=_to_camel,
+    )
 
 
 # -------------------------
@@ -265,22 +280,27 @@ class FinalCopyOutput(BaseModel):
 # -------------------------
 # Input schema for webhook payload
 # -------------------------
-class MetadataInput(BaseModel):
-    model_config = ConfigDict(extra="allow")
+class MetadataInput(WebhookBaseModel):
     business_name: str = ""
-    businessDomain: str = Field(default="", alias="business_domain")
+    business_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "business_domain",
+            "businessDomain",
+            "domain_name",
+            "domainName",
+        ),
+    )
     submission_datetime: Optional[datetime] = None
     service_type: str = ""
 
 
-class WhyChooseUsPage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class WhyChooseUsPage(WebhookBaseModel):
     generate_page: bool = False
     why_choose_us_description: str = ""
 
 
-class TaggedPerson(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class TaggedPerson(WebhookBaseModel):
     name: str = ""
     position: str = ""
     bio: str = ""
@@ -288,27 +308,23 @@ class TaggedPerson(BaseModel):
     y: float = 0.0
 
 
-class TeamPhotoWithTags(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    imageUrl: str = ""
-    taggedPeople: List[TaggedPerson] = Field(default_factory=list)
+class TeamPhotoWithTags(WebhookBaseModel):
+    image_url: str = ""
+    tagged_people: List[TaggedPerson] = Field(default_factory=list)
 
 
-class MeetTheTeamPage(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MeetTheTeamPage(WebhookBaseModel):
     generate_page: bool = False
     team_introduction: str = ""
     team_photo_with_tags: TeamPhotoWithTags = Field(default_factory=TeamPhotoWithTags)
 
 
-class AdditionalPagesList(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class AdditionalPagesList(WebhookBaseModel):
     why_choose_us_page: WhyChooseUsPage = Field(default_factory=WhyChooseUsPage)
     meet_the_team_page: MeetTheTeamPage = Field(default_factory=MeetTheTeamPage)
 
 
-class GeographicAreaMeta(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class GeographicAreaMeta(WebhookBaseModel):
     name: str = ""
     label: str = ""
     lat: str = ""
@@ -318,29 +334,25 @@ class GeographicAreaMeta(BaseModel):
     primary: bool = False
 
 
-class GeographicArea(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class GeographicArea(WebhookBaseModel):
     geographic_area_meta: GeographicAreaMeta = Field(default_factory=GeographicAreaMeta)
 
 
-class CertificationPartnership(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class CertificationPartnership(WebhookBaseModel):
     cert_item_name: str = ""
     cert_item_type: str = ""
     cert_item_image_url: str = ""
     cert_item_file_url: str = ""
 
 
-class ServiceGuaranteeItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class ServiceGuaranteeItem(WebhookBaseModel):
     guarantee_name: str = ""
     guarantee_type: str = ""
     guarantee_file_url: str = ""
     guarantee_description: str = ""
 
 
-class UserdataInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class UserDataInput(WebhookBaseModel):
     additional_pages_list: AdditionalPagesList = Field(default_factory=AdditionalPagesList)
     service_offerings: List[str] = Field(default_factory=list)
     service_offerings_other: str = ""
@@ -379,11 +391,22 @@ class UserdataInput(BaseModel):
     additional_notes: str = ""
 
 
-class WebhookInput(BaseModel):
-    model_config = ConfigDict(extra="allow")
+class WebhookInput(WebhookBaseModel):
     metadata: MetadataInput = Field(default_factory=MetadataInput)
-    userdata: UserdataInput = Field(default_factory=UserdataInput)
-    querystring: Dict[str, Any] = Field(default_factory=dict)
+    user_data: UserDataInput = Field(
+        default_factory=UserDataInput,
+        validation_alias=AliasChoices("user_data", "userData", "userdata"),
+    )
+    query_string: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("query_string", "queryString", "querystring"),
+    )
+    sitemap_data: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_payload_keys(cls, data):
+        return normalize_webhook_payload(data)
 
 
 WebhookInput.model_rebuild()
