@@ -141,6 +141,7 @@ class SitemapAssistantOutput(BaseModel):
 # -------------------------
 class HomePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    path: str = ""
     html_title: str = ""
     meta_description: str = ""
     home_hero: Hero = Field(default_factory=Hero)
@@ -152,6 +153,7 @@ class HomePayload(BaseModel):
 
 class AboutPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    path: str = ""
     html_title: str = ""
     meta_description: str = ""
     about_hero: Hero = Field(default_factory=Hero)
@@ -197,6 +199,7 @@ class SEOFields(BaseModel):
 
 class SEOPageItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    path: str = ""
     seo_page_type: str = "service"
     post_title: str = ""
     post_name: str = ""
@@ -245,7 +248,6 @@ class SEOEnvelope(BaseModel):
 class UtilityAboutItem(AboutPayload):
     # Same as AboutPayload plus identifiers
     model_config = ConfigDict(extra="forbid")
-    path: str
     content_page_type: Literal["about-why", "about-team"]
 
 
