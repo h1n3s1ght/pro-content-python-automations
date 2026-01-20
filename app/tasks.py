@@ -1,12 +1,19 @@
 import asyncio
-from datetime import datetime
+import logging
+import os
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import httpx
 from celery.exceptions import SoftTimeLimitExceeded
+from sqlalchemy import select
 
 from .celery_app import celery_app
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_warn, log_error
+from .outbox import claim_delivery, mark_delivery_failed, mark_delivery_sent
+from .db import get_sessionmaker
+from .db_models import DeliveryOutbox
 from .workflow import run_workflow
 from .resume_workflow import run_resume_workflow
 from .storage import (
@@ -20,6 +27,13 @@ from .storage import (
     is_resume_mode,
 )
 from .monthly_logs import upload_monthly_queue_logs
+
+logger = logging.getLogger(__name__)
+
+DELIVERY_MODE = os.getenv("DELIVERY_MODE", "zapier").strip().lower()
+ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL", "").strip()
+DELIVERY_HTTP_TIMEOUT = float(os.getenv("DELIVERY_HTTP_TIMEOUT", "30"))
+DUE_DELIVERY_STATUSES = ("COMPLETED_PENDING_SEND", "READY_TO_SEND", "FAILED")
 
 
 @celery_app.task(
@@ -144,3 +158,105 @@ def upload_previous_month_queue_logs():
 
     month_yyyy_mm = f"{year:04d}-{month:02d}"
     asyncio.run(upload_monthly_queue_logs(month_yyyy_mm))
+
+
+@celery_app.task(
+    name="app.tasks.enqueue_due_deliveries",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3},
+)
+def enqueue_due_deliveries():
+    now = datetime.now(timezone.utc)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        stmt = (
+            select(DeliveryOutbox.id)
+            .where(
+                DeliveryOutbox.scheduled_for.is_not(None),
+                DeliveryOutbox.scheduled_for <= now,
+                DeliveryOutbox.status.in_(DUE_DELIVERY_STATUSES),
+            )
+            .order_by(DeliveryOutbox.scheduled_for.asc())
+        )
+        delivery_ids = [str(row[0]) for row in session.execute(stmt).all()]
+    finally:
+        session.close()
+
+    for delivery_id in delivery_ids:
+        send_delivery.delay(delivery_id)
+
+    logger.info("enqueue_due_deliveries count=%s", len(delivery_ids))
+    return len(delivery_ids)
+
+
+def _resolve_target_url(row: dict) -> str:
+    override_url = str(row.get("override_target_url") or "").strip()
+    default_url = str(row.get("default_target_url") or "").strip()
+    return override_url or default_url
+
+
+def _build_delivery_payload(row: dict, target_url: str) -> dict:
+    return {
+        "delivery_id": str(row.get("id") or ""),
+        "job_id": row.get("job_id"),
+        "client_name": row.get("client_name"),
+        "payload_s3_key": row.get("payload_s3_key"),
+        "target_url": target_url,
+    }
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(),
+)
+def send_delivery(self, delivery_id: str):
+    try:
+        row = claim_delivery(delivery_id)
+    except Exception as exc:
+        logger.exception("send_delivery_claim_failed delivery_id=%s err=%s", delivery_id, exc)
+        raise
+
+    if not row:
+        logger.info("send_delivery_noop delivery_id=%s", delivery_id)
+        return
+
+    target_url = _resolve_target_url(row)
+    if not target_url:
+        mark_delivery_failed(delivery_id, "missing target_url")
+        logger.warning("send_delivery_missing_target delivery_id=%s", delivery_id)
+        return
+
+    payload = _build_delivery_payload(row, target_url)
+    mode = DELIVERY_MODE
+
+    if mode == "zapier":
+        if not ZAPIER_WEBHOOK_URL:
+            mark_delivery_failed(delivery_id, "missing ZAPIER_WEBHOOK_URL")
+            logger.warning("send_delivery_missing_zapier_url delivery_id=%s", delivery_id)
+            return
+        url = ZAPIER_WEBHOOK_URL
+    elif mode == "direct":
+        url = target_url
+    else:
+        mark_delivery_failed(delivery_id, f"invalid DELIVERY_MODE: {mode}")
+        logger.warning("send_delivery_invalid_mode delivery_id=%s mode=%s", delivery_id, mode)
+        return
+
+    try:
+        with httpx.Client(timeout=DELIVERY_HTTP_TIMEOUT) as client:
+            resp = client.post(url, json=payload)
+    except Exception as exc:
+        mark_delivery_failed(delivery_id, f"request_error: {exc}")
+        logger.exception("send_delivery_request_error delivery_id=%s", delivery_id)
+        return
+
+    if 200 <= resp.status_code < 300:
+        mark_delivery_sent(delivery_id)
+        logger.info("send_delivery_sent delivery_id=%s status=%s", delivery_id, resp.status_code)
+        return
+
+    resp_body = (resp.text or "")[:800]
+    mark_delivery_failed(delivery_id, f"{resp.status_code}: {resp_body}")
+    logger.warning("send_delivery_failed delivery_id=%s status=%s", delivery_id, resp.status_code)

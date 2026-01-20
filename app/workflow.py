@@ -11,7 +11,7 @@ from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_debug, log_warn, log_error
 from .storage import get_progress, set_progress, is_canceled, is_paused
-from .post_zapier import post_final_copy
+from .outbox import build_default_target_url, enqueue_delivery_outbox
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
@@ -67,10 +67,13 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         or webhook_payload.get("userData")
         or {}
     )
+    job_details = webhook_payload.get("job_details") or webhook_payload.get("jobDetails") or {}
     stamp = datetime_cst_stamp()
 
     business_name = _extract_business_name(metadata)
     business_domain = _extract_business_domain(metadata)
+    job_id_value = job_id or ""
+    client_name = business_name or business_domain or job_id_value
 
     async def log_i(msg: str) -> None:
         if job_id:
@@ -230,21 +233,33 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     await prog({"stage": "compile"})
     final_copy = compile_final(envelopes)
 
+    s3_key = ""
     try:
         s3_key = upload_copy(metadata, final_copy, stamp)
         await log_i(f"copy_uploaded: {s3_key}")
     except Exception as e:
         await log_w(f"copy_upload_failed: {e}")
 
-    if business_name and business_domain:
-        await log_i(f"Sending request to Zapier with Business information of: {business_name} and {business_domain}")
-        try:
-            ok, msg = await post_final_copy(final_copy=final_copy, business_name=business_name, business_domain=business_domain)
-            await log_i(f"zapier:{msg}")
-        except Exception as e:
-            await log_e(f"zapier_exception: {e}")
+    if s3_key:
+        if not job_id_value:
+            await log_e("outbox_skipped: missing_job_id")
+        elif not client_name:
+            await log_e("outbox_skipped: missing_client_name")
+        else:
+            try:
+                default_target_url = build_default_target_url(client_name, job_details)
+                await asyncio.to_thread(
+                    enqueue_delivery_outbox,
+                    job_id=job_id_value,
+                    client_name=client_name,
+                    payload_s3_key=s3_key,
+                    default_target_url=default_target_url,
+                )
+                await log_i(f"outbox_enqueued: {default_target_url}")
+            except Exception as e:
+                await log_e(f"outbox_exception: {e}")
     else:
-        await log_i("zapier_skipped: missing_business_metadata")
+        await log_w("outbox_skipped: missing_s3_key")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy

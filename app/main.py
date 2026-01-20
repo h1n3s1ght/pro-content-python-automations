@@ -11,6 +11,8 @@ from .models import WebhookInput
 from .tasks import run_full_job
 from .storage import get_result, get_status, register_job, set_status, set_payload
 from .ui import router as ui_router
+from .deliveries import router as deliveries_router
+from .admin import router as admin_router
 from .webhook_utils import collect_unknown_fields, normalize_webhook_payload
 
 load_dotenv()
@@ -19,6 +21,8 @@ API_BEARER_TOKEN = os.getenv("API_BEARER_TOKEN", "").strip()
 
 app = FastAPI()
 app.include_router(ui_router)
+app.include_router(deliveries_router)
+app.include_router(admin_router)
 logger = logging.getLogger(__name__)
 
 

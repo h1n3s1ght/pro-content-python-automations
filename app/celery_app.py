@@ -25,6 +25,10 @@ celery_app.conf.update(
         "monthly-queue-logs-upload": {
             "task": "app.tasks.upload_previous_month_queue_logs",
             "schedule": crontab(minute=10, hour=0, day_of_month=1),
-        }
+        },
+        "daily-delivery-enqueue": {
+            "task": "app.tasks.enqueue_due_deliveries",
+            "schedule": crontab(minute=0, hour=8),
+        },
     },
 )

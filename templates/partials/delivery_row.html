@@ -1,0 +1,46 @@
+<tr id="delivery-{{ delivery.id }}">
+  <td>{{ delivery.client_name }}</td>
+  <td class="mono">{{ delivery.job_id }}</td>
+  <td>{{ delivery.status }}</td>
+  <td class="text-muted">{{ format_dt(delivery.created_at) }}</td>
+  <td>{{ delivery.attempt_count }}</td>
+  <td class="url-cell">
+    <div class="text-truncate" title="{{ delivery.default_target_url }}">{{ delivery.default_target_url }}</div>
+  </td>
+  <td class="url-cell">
+    <form
+      class="d-flex gap-2"
+      hx-post="/admin/deliveries/{{ delivery.id }}/override-url"
+      hx-target="#delivery-{{ delivery.id }}"
+      hx-swap="outerHTML"
+    >
+      <input
+        class="form-control form-control-sm"
+        name="override_target_url"
+        value="{{ delivery.override_target_url or '' }}"
+        placeholder="Override URL"
+      />
+      <button class="btn btn-sm btn-outline-primary" type="submit">Save</button>
+    </form>
+  </td>
+  <td class="text-nowrap">
+    <button
+      class="btn btn-sm btn-primary me-1"
+      hx-post="/admin/deliveries/{{ delivery.id }}/send-now"
+      hx-target="#delivery-{{ delivery.id }}"
+      hx-swap="outerHTML"
+    >Send Now</button>
+    <button
+      class="btn btn-sm btn-outline-secondary me-1"
+      hx-post="/admin/deliveries/{{ delivery.id }}/mark-ready"
+      hx-target="#delivery-{{ delivery.id }}"
+      hx-swap="outerHTML"
+    >Mark Ready</button>
+    <button
+      class="btn btn-sm btn-outline-danger"
+      hx-post="/admin/deliveries/{{ delivery.id }}/send-now"
+      hx-target="#delivery-{{ delivery.id }}"
+      hx-swap="outerHTML"
+    >Retry</button>
+  </td>
+</tr>

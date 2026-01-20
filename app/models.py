@@ -403,6 +403,10 @@ class WebhookInput(WebhookBaseModel):
         default_factory=dict,
         validation_alias=AliasChoices("query_string", "queryString", "querystring"),
     )
+    job_details: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("job_details", "jobDetails", "jobdetails"),
+    )
     sitemap_data: Optional[Dict[str, Any]] = None
 
     @model_validator(mode="before")
