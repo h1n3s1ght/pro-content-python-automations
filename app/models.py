@@ -142,6 +142,7 @@ class SitemapAssistantOutput(BaseModel):
 class HomePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = ""
+    page_title: Optional[str] = None
     html_title: str = ""
     meta_description: str = ""
     home_hero: Hero = Field(default_factory=Hero)
@@ -154,6 +155,7 @@ class HomePayload(BaseModel):
 class AboutPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = ""
+    page_title: Optional[str] = None
     html_title: str = ""
     meta_description: str = ""
     about_hero: Hero = Field(default_factory=Hero)
@@ -200,6 +202,7 @@ class SEOFields(BaseModel):
 class SEOPageItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = ""
+    page_title: Optional[str] = None
     seo_page_type: str = "service"
     post_title: str = ""
     post_name: str = ""

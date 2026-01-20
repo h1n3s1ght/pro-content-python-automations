@@ -1,8 +1,11 @@
 from __future__ import annotations
+import logging
 import re
 from typing import Any, Dict, List
 
 from .models import FinalCopyOutput, HomePayload, AboutPayload, SEOPageItem, UtilityAboutItem
+
+logger = logging.getLogger(__name__)
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
@@ -23,6 +26,16 @@ def _first_non_empty(*values: Any) -> str:
         if cleaned:
             return cleaned
     return ""
+
+
+def _sanitize_page_title(payload: Dict[str, Any]) -> None:
+    if "page_title" in payload and not isinstance(payload.get("page_title"), str):
+        payload.pop("page_title", None)
+
+
+def _drop_page_title_if_none(container: Dict[str, Any]) -> None:
+    if "page_title" in container and container.get("page_title") is None:
+        container.pop("page_title", None)
 
 
 def _seo_path_prefix(seo_page_type: Any) -> str:
@@ -141,19 +154,25 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
         kind = _clean_str(env.get("page_kind"))
         if kind == "home" and "home" in env:
             payload = dict(env.get("home") or {})
+            _sanitize_page_title(payload)
             payload["path"] = _resolve_path(kind, env, payload)
             final.home = HomePayload.model_validate(payload)
         elif kind == "about" and "about" in env:
             payload = dict(env.get("about") or {})
+            _sanitize_page_title(payload)
             payload["path"] = _resolve_path(kind, env, payload)
             final.about = AboutPayload.model_validate(payload)
         elif kind == "seo_page" and "seo_page" in env:
             payload = dict(env.get("seo_page") or {})
+            _sanitize_page_title(payload)
             payload["path"] = _resolve_path(kind, env, payload)
             final.seo_pages.append(SEOPageItem.model_validate(payload))
         elif kind == "utility_page" and "utility_page" in env:
             payload = dict(env.get("utility_page") or {})
+            _sanitize_page_title(payload)
             payload["path"] = _resolve_path(kind, env, payload)
+            if "page_title" in payload and isinstance(payload.get("page_title"), str):
+                logger.info("utility_page.page_title preserved for %s", payload["path"])
             final.utility_pages.append(UtilityAboutItem.model_validate(payload))
         else:
             # skip or unknown
@@ -166,4 +185,15 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
     _validate_final_paths(final)
 
     # Enforce final strict schema
-    return final.model_dump()
+    output = final.model_dump()
+    if isinstance(output.get("home"), dict):
+        _drop_page_title_if_none(output["home"])
+    if isinstance(output.get("about"), dict):
+        _drop_page_title_if_none(output["about"])
+    for page in output.get("seo_pages") or []:
+        if isinstance(page, dict):
+            _drop_page_title_if_none(page)
+    for page in output.get("utility_pages") or []:
+        if isinstance(page, dict):
+            _drop_page_title_if_none(page)
+    return output
