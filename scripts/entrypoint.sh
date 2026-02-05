@@ -13,8 +13,16 @@ cd "${ROOT_DIR}"
 #   ./scripts/entrypoint.sh migrate
 #   ./scripts/entrypoint.sh <any other command...>   # passthrough
 
-MODE="${1:-web}"
-shift || true
+INVOKED="$(basename "$0")"
+case "${INVOKED}" in
+  web|worker|beat|call|migrate)
+    MODE="${INVOKED}"
+    ;;
+  *)
+    MODE="${1:-web}"
+    shift || true
+    ;;
+esac
 
 run_migrations() {
   if [[ "${RUN_MIGRATIONS:-1}" == "0" ]]; then
@@ -92,4 +100,3 @@ case "${MODE}" in
     exec "${MODE}" "$@"
     ;;
 esac
-
