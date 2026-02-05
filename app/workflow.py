@@ -9,7 +9,8 @@ from typing import Any, Dict, Optional, List
 from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
 from .compile import compile_final
-from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
+from .s3_upload import datetime_cst_stamp, upload_sitemap
+from .payload_store import save_payload_json
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_debug, log_warn, log_error
 from .storage import get_progress, set_progress, is_canceled, is_paused
@@ -238,13 +239,13 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     s3_key = ""
     try:
-        logger.info("job=%s copy_upload_start client=%s", job_id_value, client_name)
-        s3_key = upload_copy(metadata, final_copy, stamp)
-        logger.info("job=%s copy_upload_ok s3_key=%s", job_id_value, s3_key)
-        await log_i(f"copy_uploaded: {s3_key}")
+        logger.info("job=%s payload_store_start client=%s", job_id_value, client_name)
+        s3_key = save_payload_json(job_id_value, final_copy)
+        logger.info("job=%s payload_store_ok path=%s", job_id_value, s3_key)
+        await log_i(f"payload_stored: {s3_key}")
     except Exception as e:
-        logger.warning("job=%s copy_upload_failed err=%s", job_id_value, e)
-        await log_w(f"copy_upload_failed: {e}")
+        logger.warning("job=%s payload_store_failed err=%s", job_id_value, e)
+        await log_w(f"payload_store_failed: {e}")
 
     if s3_key:
         if not job_id_value:

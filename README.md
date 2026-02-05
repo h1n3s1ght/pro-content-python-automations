@@ -21,6 +21,11 @@ Canonical internal field names remain `snake_case` for storage and downstream pr
 - `DELIVERY_MODE` (`zapier` or `direct`, default `zapier`).
 - `ZAPIER_WEBHOOK_URL` (required when `DELIVERY_MODE=zapier`).
 - `DELIVERY_HTTP_TIMEOUT` (seconds, default `30`).
+- Payload storage (waiting-to-send):
+  - `PAYLOAD_DISK_DIR` (default: `/var/data/procontentapi`). For Render, attach a Persistent Disk and mount it at `/var/data`.
+  - `PAYLOAD_RETENTION_DAYS` (default: `7`). After a successful send, the payload file is deleted after this many days.
+  - `ARCHIVE_TO_S3_ON_SEND` (default: `0`). If enabled (`1`/`true`), after a successful send the payload is archived to S3.
+  - `S3_DELIVERED_PREFIX` (default: `delivered/`) for S3 archival keys.
 - `PREVIEW_BASE_DOMAIN` (default `wp-premium-hosting.com`).
 - `PREVIEW_NAMESPACE` (default `kaseya`).
 - `SITE_CHECK_TIMEOUT` (seconds, default `10`).

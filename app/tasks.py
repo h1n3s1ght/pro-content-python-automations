@@ -34,7 +34,12 @@ from .storage import (
     is_resume_mode,
 )
 from .monthly_logs import upload_monthly_queue_logs
-from .s3_upload import download_json
+from .payload_store import (
+    load_payload_json,
+    maybe_archive_payload_to_s3,
+    purge_payload_file,
+    retention_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +273,7 @@ def send_delivery(self, delivery_id: str):
     payload = _build_delivery_payload(row, target_url)
     mode = DELIVERY_MODE
 
+    content = None
     if mode == "zapier":
         override_url = str(row.get("override_target_url") or "").strip()
         if not override_url:
@@ -280,7 +286,7 @@ def send_delivery(self, delivery_id: str):
             mark_delivery_failed(delivery_id, "missing ZAPIER_WEBHOOK_URL")
             logger.warning("send_delivery_missing_zapier_url delivery_id=%s", delivery_id)
             return
-        content = download_json(row.get("payload_s3_key") or "")
+        content = load_payload_json(row.get("payload_s3_key") or "")
         if content is None:
             mark_delivery_failed(delivery_id, "missing payload content")
             logger.warning("send_delivery_missing_payload delivery_id=%s", delivery_id)
@@ -305,6 +311,19 @@ def send_delivery(self, delivery_id: str):
     if 200 <= resp.status_code < 300:
         mark_delivery_sent(delivery_id)
         logger.info("send_delivery_sent delivery_id=%s status=%s", delivery_id, resp.status_code)
+        try:
+            job_id = str(row.get("job_id") or "").strip()
+            client_name = str(row.get("client_name") or "").strip()
+            if job_id:
+                if isinstance(content, dict):
+                    maybe_archive_payload_to_s3(job_id, client_name or job_id, content)
+                seconds = retention_seconds()
+                if seconds:
+                    purge_local_payload.apply_async(args=[job_id], countdown=seconds)
+                else:
+                    purge_payload_file(job_id)
+        except Exception as exc:
+            logger.warning("send_delivery_post_success_hooks_failed delivery_id=%s err=%s", delivery_id, exc)
         return
 
     resp_body = (resp.text or "")[:800]
@@ -405,3 +424,12 @@ def check_site_ready(self, delivery_id: str):
         resp.status_code,
         next_check_at.isoformat(),
     )
+
+
+@celery_app.task(
+    name="app.tasks.purge_local_payload",
+    bind=True,
+    autoretry_for=(),
+)
+def purge_local_payload(self, job_id: str):
+    return purge_payload_file(job_id)

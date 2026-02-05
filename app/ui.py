@@ -155,6 +155,8 @@ async def delivery_trace(job_id: str, session: Session = Depends(get_db_session)
         "sitemap_upload_failed",
         "copy_uploaded",
         "copy_upload_failed",
+        "payload_stored",
+        "payload_store_failed",
         "outbox_",
         "preview_url_",
     )
@@ -164,6 +166,9 @@ async def delivery_trace(job_id: str, session: Session = Depends(get_db_session)
     for line in reversed(logs or []):
         if "copy_uploaded:" in line:
             inferred_s3_key = line.split("copy_uploaded:", 1)[1].strip()
+            break
+        if "payload_stored:" in line:
+            inferred_s3_key = line.split("payload_stored:", 1)[1].strip()
             break
 
     outbox_row = session.execute(select(DeliveryOutbox).where(DeliveryOutbox.job_id == job_id)).scalars().first()
