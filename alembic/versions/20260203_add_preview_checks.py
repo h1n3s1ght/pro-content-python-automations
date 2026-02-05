@@ -1,6 +1,6 @@
 """add delivery preview check fields
 
-Revision ID: 20260203_add_delivery_preview_checks
+Revision ID: 20260203_add_preview_checks
 Revises: 20240914_create_delivery_outbox
 Create Date: 2026-02-03 00:00:00.000000
 
@@ -8,7 +8,7 @@ Create Date: 2026-02-03 00:00:00.000000
 from alembic import op
 import sqlalchemy as sa
 
-revision = "20260203_add_delivery_preview_checks"
+revision = "20260203_add_preview_checks"
 down_revision = "20240914_create_delivery_outbox"
 branch_labels = None
 depends_on = None
