@@ -220,6 +220,7 @@ async def deliveries_page():
               <div class="text-muted small">/ui/deliveries</div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <a href="/ui/queue" class="btn btn-outline-primary btn-sm">Job Queue</a>
               <button id="refreshBtn" class="btn btn-outline-secondary btn-sm">Refresh</button>
               <div class="text-muted small" id="lastUpdated"></div>
             </div>
@@ -383,6 +384,7 @@ async def queue_page():
               <div class="text-muted small">/ui/queue</div>
             </div>
             <div class="d-flex align-items-center gap-2">
+              <a href="/ui/deliveries" class="btn btn-outline-primary btn-sm">Deliveries</a>
               <button id="filterBtn" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#filterModal">Filters</button>
               <button id="refreshBtn" class="btn btn-outline-secondary btn-sm">Refresh</button>
               <div class="text-muted small" id="lastUpdated"></div>
