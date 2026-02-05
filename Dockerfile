@@ -14,8 +14,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x scripts/start_render.sh
+RUN chmod +x scripts/*.sh
 
 EXPOSE 8010
 
-CMD ["./scripts/start_render.sh"]
+ENTRYPOINT ["./scripts/entrypoint.sh"]
+CMD ["web"]
