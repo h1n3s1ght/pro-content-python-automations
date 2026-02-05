@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# Determine repo root. On Docker/Render images we expect the app at /app.
+# When the script is invoked via a PATH alias/symlink (e.g. `web`, `worker`),
+# $0 and BASH_SOURCE can point at /usr/local/bin/*, so don't derive ROOT_DIR
+# from those in containers.
+if [[ -d "/app" && -f "/app/alembic.ini" ]]; then
+  ROOT_DIR="/app"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
 cd "${ROOT_DIR}"
 
 # Usage:
@@ -24,6 +32,8 @@ case "${INVOKED}" in
     ;;
 esac
 
+echo "entrypoint_mode=${MODE}" >&2
+
 run_migrations() {
   if [[ "${RUN_MIGRATIONS:-1}" == "0" ]]; then
     echo "RUN_MIGRATIONS=0; skipping alembic upgrade." >&2
@@ -37,6 +47,8 @@ run_migrations() {
 
   # Prevent concurrent migration runs across multiple services.
   # Uses a Postgres advisory lock held for the duration of `alembic upgrade head`.
+  ALEMBIC_INI="${ALEMBIC_INI:-${ROOT_DIR}/alembic.ini}"
+  export ALEMBIC_INI
   python - <<'PY'
 import os
 import subprocess
@@ -58,6 +70,11 @@ elif dsn.startswith("postgres://"):
 
 LOCK_ID = 917203041901  # stable int64; arbitrary but constant for this app
 
+cfg = (os.getenv("ALEMBIC_INI") or "").strip() or "alembic.ini"
+if not os.path.exists(cfg):
+    print(f"alembic_config_missing: {cfg}", file=sys.stderr)
+    sys.exit(1)
+
 print("migrations_lock_acquire", flush=True)
 with psycopg.connect(dsn) as conn:
     conn.autocommit = True
@@ -65,7 +82,7 @@ with psycopg.connect(dsn) as conn:
         cur.execute("SELECT pg_advisory_lock(%s)", (LOCK_ID,))
     try:
         print("migrations_start", flush=True)
-        subprocess.check_call(["alembic", "upgrade", "head"])
+        subprocess.check_call(["alembic", "-c", cfg, "upgrade", "head"])
         print("migrations_ok", flush=True)
     finally:
         with conn.cursor() as cur:
