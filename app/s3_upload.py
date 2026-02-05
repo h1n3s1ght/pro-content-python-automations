@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 
 import boto3
+import logging
 
 
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
@@ -19,6 +20,7 @@ S3_MONTHLY_LOGS_PREFIX = os.getenv("S3_MONTHLY_LOGS_PREFIX", "monthly-queue-logs
 
 _s3 = boto3.client("s3", region_name=AWS_REGION)
 _CST = ZoneInfo("America/Chicago")
+logger = logging.getLogger(__name__)
 
 
 
@@ -55,12 +57,30 @@ def upload_json(prefix: str, filename: str, data: Any) -> str:
 
     body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
-    _s3.put_object(
-        Bucket=S3_BUCKET,
-        Key=key,
-        Body=body,
-        ContentType="application/json; charset=utf-8",
-    )
+    try:
+        logger.info(
+            "s3_put_object_start bucket=%s key=%s bytes=%s region=%s",
+            S3_BUCKET,
+            key,
+            len(body),
+            AWS_REGION,
+        )
+        _s3.put_object(
+            Bucket=S3_BUCKET,
+            Key=key,
+            Body=body,
+            ContentType="application/json; charset=utf-8",
+        )
+        logger.info("s3_put_object_ok bucket=%s key=%s", S3_BUCKET, key)
+    except Exception as exc:
+        logger.exception(
+            "s3_put_object_failed bucket=%s key=%s region=%s err=%s",
+            S3_BUCKET,
+            key,
+            AWS_REGION,
+            exc,
+        )
+        raise
     return key
 
 
@@ -102,3 +122,26 @@ def download_json(key: str) -> Any:
         return json.loads(body)
     except Exception:
         return None
+
+
+def head_object_info(key: str) -> Dict[str, Any] | None:
+    if not key:
+        return None
+    try:
+        resp = _s3.head_object(Bucket=S3_BUCKET, Key=key)
+        return {
+            "bucket": S3_BUCKET,
+            "key": key,
+            "region": AWS_REGION,
+            "content_length": int(resp.get("ContentLength") or 0),
+            "content_type": resp.get("ContentType"),
+            "etag": resp.get("ETag"),
+            "last_modified": resp.get("LastModified").isoformat() if resp.get("LastModified") else None,
+        }
+    except Exception as exc:
+        return {
+            "bucket": S3_BUCKET,
+            "key": key,
+            "region": AWS_REGION,
+            "error": str(exc),
+        }

@@ -1,7 +1,9 @@
 import time
 import json
 import os
+import logging
 from uuid import UUID
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -23,8 +25,32 @@ from .storage import (
     resume_job,
 )
 from .tasks import run_resume_job, send_delivery
+from .s3_upload import head_object_info
 
 router = APIRouter(prefix="/ui", tags=["ui"])
+logger = logging.getLogger(__name__)
+
+
+def _safe_db_location() -> str:
+    raw = (os.getenv("DATABASE_URL", "") or "").strip()
+    if not raw:
+        return "missing"
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://") :]
+    if raw.startswith("postgresql://") and "+psycopg" not in raw:
+        raw = "postgresql+psycopg://" + raw[len("postgresql://") :]
+    try:
+        parsed = urlparse(raw)
+        host = parsed.hostname or ""
+        port = parsed.port or ""
+        dbname = (parsed.path or "").lstrip("/")
+        if host and port and dbname:
+            return f"{host}:{port}/{dbname}"
+        if host and dbname:
+            return f"{host}/{dbname}"
+        return dbname or host or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _badge(text: str) -> str:
@@ -114,6 +140,55 @@ async def job_data(job_id: str):
     return JSONResponse({"job_id": job_id, "status": status, "progress": prog, "logs": logs})
 
 
+@router.get("/api/job/{job_id}/delivery-trace")
+async def delivery_trace(job_id: str, session: Session = Depends(get_db_session)):
+    """
+    Debug helper to understand why a completed job did/did not create a delivery_outbox row.
+    Avoids returning secrets; only returns safe, high-signal fields.
+    """
+    status = await get_status(job_id) or "unknown"
+    prog = await get_progress(job_id)
+    logs = await get_log(job_id, 500)
+
+    needles = (
+        "sitemap_uploaded",
+        "sitemap_upload_failed",
+        "copy_uploaded",
+        "copy_upload_failed",
+        "outbox_",
+        "preview_url_",
+    )
+    interesting_logs = [line for line in (logs or []) if any(n in line for n in needles)]
+
+    inferred_s3_key = ""
+    for line in reversed(logs or []):
+        if "copy_uploaded:" in line:
+            inferred_s3_key = line.split("copy_uploaded:", 1)[1].strip()
+            break
+
+    outbox_row = session.execute(select(DeliveryOutbox).where(DeliveryOutbox.job_id == job_id)).scalars().first()
+    outbox = DeliveryOutboxSchema.model_validate(outbox_row).model_dump(mode="json") if outbox_row else None
+
+    s3_key = inferred_s3_key
+    if outbox and outbox.get("payload_s3_key"):
+        s3_key = str(outbox.get("payload_s3_key") or "").strip()
+
+    s3_head = head_object_info(s3_key) if s3_key else None
+
+    return JSONResponse(
+        {
+            "job_id": job_id,
+            "job_status": status,
+            "progress": prog,
+            "db": {"location": _safe_db_location()},
+            "logs_interesting": interesting_logs[-200:],
+            "inferred": {"payload_s3_key": inferred_s3_key},
+            "outbox": outbox,
+            "s3_head": s3_head,
+        }
+    )
+
+
 @router.post("/job/{job_id}/cancel")
 async def cancel_job(job_id: str):
     ok = await cancel_queued_job(job_id)
@@ -155,6 +230,14 @@ def list_deliveries(
     page_size: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_db_session),
 ):
+    logger.info(
+        "ui_list_deliveries_start status=%s client=%s page=%s page_size=%s db=%s",
+        status,
+        client,
+        page,
+        page_size,
+        _safe_db_location(),
+    )
     filters = []
     if status:
         filters.append(DeliveryOutbox.status == status)
@@ -173,6 +256,11 @@ def list_deliveries(
     stmt = stmt.offset((page - 1) * page_size).limit(page_size)
     items = session.execute(stmt).scalars().all()
 
+    logger.info(
+        "ui_list_deliveries_ok total=%s returned=%s",
+        int(total or 0),
+        len(items),
+    )
     return DeliveryListResponse(
         items=[DeliveryOutboxSchema.model_validate(item) for item in items],
         page=page,

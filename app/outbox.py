@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 import re
 import uuid
+import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy import func, update
 from sqlalchemy.dialects.postgresql import insert
@@ -15,6 +17,7 @@ from .db_models import DeliveryOutbox
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _CONDENSE_RE = re.compile(r"[^a-z0-9]+")
 READY_STATUSES = ("READY", "READY_TO_SEND", "FAILED", "COMPLETED_PENDING_SEND")
+logger = logging.getLogger(__name__)
 
 
 def _clean_str(value: Any) -> str:
@@ -86,6 +89,28 @@ def build_preview_url(condensed_name: str) -> str:
     return f"https://{condensed_name}.{base_domain}/wp-json/{namespace}/site/status"
 
 
+def _safe_db_location() -> str:
+    raw = _clean_str(os.getenv("DATABASE_URL", ""))
+    if not raw:
+        return "missing"
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://") :]
+    if raw.startswith("postgresql://") and "+psycopg" not in raw:
+        raw = "postgresql+psycopg://" + raw[len("postgresql://") :]
+    try:
+        parsed = urlparse(raw)
+        host = parsed.hostname or ""
+        port = parsed.port or ""
+        dbname = (parsed.path or "").lstrip("/")
+        if host and port and dbname:
+            return f"{host}:{port}/{dbname}"
+        if host and dbname:
+            return f"{host}/{dbname}"
+        return dbname or host or "unknown"
+    except Exception:
+        return "unknown"
+
+
 def enqueue_delivery_outbox(
     *,
     job_id: str,
@@ -97,6 +122,14 @@ def enqueue_delivery_outbox(
     site_check_attempts: int = 0,
     status: str = "COMPLETED_PENDING_SEND",
 ) -> uuid.UUID | None:
+    logger.info(
+        "outbox_enqueue_start job_id=%s client=%s s3_key=%s status=%s db=%s",
+        job_id,
+        client_name,
+        payload_s3_key,
+        status,
+        _safe_db_location(),
+    )
     stmt = (
         insert(DeliveryOutbox)
         .values(
@@ -130,7 +163,17 @@ def enqueue_delivery_outbox(
     try:
         row = session.execute(stmt).scalar_one_or_none()
         session.commit()
+        logger.info(
+            "outbox_enqueue_ok job_id=%s delivery_id=%s status=%s",
+            job_id,
+            str(row) if row else "",
+            status,
+        )
         return row
+    except Exception as exc:
+        session.rollback()
+        logger.exception("outbox_enqueue_failed job_id=%s err=%s", job_id, exc)
+        raise
     finally:
         session.close()
 

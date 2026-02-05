@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
@@ -16,6 +17,7 @@ from .outbox import build_default_target_url, build_preview_url, condense_name, 
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
+logger = logging.getLogger(__name__)
 
 NON_GENERATIVE_PATHS = {
     "/contact-us",
@@ -236,9 +238,12 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     s3_key = ""
     try:
+        logger.info("job=%s copy_upload_start client=%s", job_id_value, client_name)
         s3_key = upload_copy(metadata, final_copy, stamp)
+        logger.info("job=%s copy_upload_ok s3_key=%s", job_id_value, s3_key)
         await log_i(f"copy_uploaded: {s3_key}")
     except Exception as e:
+        logger.warning("job=%s copy_upload_failed err=%s", job_id_value, e)
         await log_w(f"copy_upload_failed: {e}")
 
     if s3_key:
@@ -271,14 +276,22 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     site_check_attempts=0,
                     status=initial_status,
                 )
+                logger.info(
+                    "job=%s outbox_enqueued delivery_id=%s s3_key=%s",
+                    job_id_value,
+                    str(delivery_id) if delivery_id else "",
+                    s3_key,
+                )
                 await log_i(f"outbox_enqueued: {default_target_url}")
                 if preview_url:
                     await log_i(f"preview_url_enqueued: {preview_url}")
                 if delivery_id:
                     await log_i(f"outbox_delivery_id: {delivery_id}")
             except Exception as e:
+                logger.exception("job=%s outbox_exception err=%s", job_id_value, e)
                 await log_e(f"outbox_exception: {e}")
     else:
+        logger.warning("job=%s outbox_skipped_missing_s3_key client=%s", job_id_value, client_name)
         await log_w("outbox_skipped: missing_s3_key")
 
     await prog({"stage": "completed", "current": ""})
