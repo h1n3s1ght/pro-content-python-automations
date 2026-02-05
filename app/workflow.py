@@ -259,7 +259,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                         preview_url = build_preview_url(condensed)
                     except Exception as e:
                         await log_w(f"preview_url_exception: {e}")
-                initial_status = "WAITING_FOR_SITE" if preview_url else "FAILED"
+                initial_status = "COMPLETED_PENDING_SEND"
                 delivery_id = await asyncio.to_thread(
                     enqueue_delivery_outbox,
                     job_id=job_id_value,
@@ -267,7 +267,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     payload_s3_key=s3_key,
                     default_target_url=default_target_url,
                     preview_url=preview_url or None,
-                    site_check_next_at=datetime.now(timezone.utc) if preview_url else None,
+                    site_check_next_at=None,
                     site_check_attempts=0,
                     status=initial_status,
                 )

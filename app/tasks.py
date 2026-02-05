@@ -227,10 +227,20 @@ def _build_delivery_payload(row: dict, target_url: str) -> dict:
     }
 
 
+def _extract_data_content(content: dict) -> dict:
+    if not isinstance(content, dict):
+        return {}
+    data = content.get("data")
+    if isinstance(data, dict) and isinstance(data.get("content"), dict):
+        return data["content"]
+    return content
+
+
 def _build_zapier_payload(row: dict, target_url: str, content: dict) -> dict:
+    data_content = _extract_data_content(content)
     return {
-        "data": {"content": content},
-        "delivery": _build_delivery_payload(row, target_url),
+        "metadata": {"deliveryDomain": target_url},
+        "data": {"content": data_content},
     }
 
 
@@ -259,6 +269,13 @@ def send_delivery(self, delivery_id: str):
     mode = DELIVERY_MODE
 
     if mode == "zapier":
+        override_url = str(row.get("override_target_url") or "").strip()
+        if not override_url:
+            mark_delivery_failed(delivery_id, "missing delivery_url")
+            logger.warning("send_delivery_missing_delivery_url delivery_id=%s", delivery_id)
+            return
+        target_url = override_url
+        payload = _build_delivery_payload(row, target_url)
         if not ZAPIER_WEBHOOK_URL:
             mark_delivery_failed(delivery_id, "missing ZAPIER_WEBHOOK_URL")
             logger.warning("send_delivery_missing_zapier_url delivery_id=%s", delivery_id)

@@ -1,11 +1,17 @@
 import time
 import json
 import os
+from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi import Query
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from .db import get_db_session
+from .db_models import DeliveryOutbox
+from .delivery_schemas import DeliveryListResponse, DeliveryOutboxSchema, OverrideURLRequest, SendNowResponse
 from .storage import (
     list_jobs_with_scores,
     get_status,
@@ -16,7 +22,7 @@ from .storage import (
     pause_job,
     resume_job,
 )
-from .tasks import run_resume_job
+from .tasks import run_resume_job, send_delivery
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 
@@ -132,6 +138,230 @@ async def resume_job_endpoint(job_id: str):
     if ok:
         run_resume_job.delay(job_id)
     return JSONResponse({"ok": ok})
+
+
+def _get_delivery(session: Session, delivery_id: UUID) -> DeliveryOutbox:
+    row = session.get(DeliveryOutbox, delivery_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="delivery not found")
+    return row
+
+
+@router.get("/api/deliveries", response_model=DeliveryListResponse)
+def list_deliveries(
+    status: str | None = Query(default=None),
+    client: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    session: Session = Depends(get_db_session),
+):
+    filters = []
+    if status:
+        filters.append(DeliveryOutbox.status == status)
+    if client:
+        filters.append(DeliveryOutbox.client_name.ilike(f"%{client}%"))
+
+    count_stmt = select(func.count()).select_from(DeliveryOutbox)
+    if filters:
+        count_stmt = count_stmt.where(*filters)
+    total = session.execute(count_stmt).scalar_one()
+
+    stmt = select(DeliveryOutbox)
+    if filters:
+        stmt = stmt.where(*filters)
+    stmt = stmt.order_by(DeliveryOutbox.created_at.desc())
+    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+    items = session.execute(stmt).scalars().all()
+
+    return DeliveryListResponse(
+        items=[DeliveryOutboxSchema.model_validate(item) for item in items],
+        page=page,
+        page_size=page_size,
+        total=total,
+        status_filter=status,
+    )
+
+
+@router.post("/deliveries/{delivery_id}/override-url", response_model=DeliveryOutboxSchema)
+def set_override_url(
+    delivery_id: UUID,
+    payload: OverrideURLRequest,
+    session: Session = Depends(get_db_session),
+):
+    row = _get_delivery(session, delivery_id)
+    row.override_target_url = payload.override_target_url
+    session.commit()
+    session.refresh(row)
+    return DeliveryOutboxSchema.model_validate(row)
+
+
+@router.post("/deliveries/{delivery_id}/send-now", response_model=SendNowResponse)
+def send_now(delivery_id: UUID, session: Session = Depends(get_db_session)):
+    _get_delivery(session, delivery_id)
+    async_result = send_delivery.delay(str(delivery_id))
+    return SendNowResponse(ok=True, task_id=async_result.id)
+
+
+@router.get("/deliveries", response_class=HTMLResponse)
+async def deliveries_page():
+    html = """
+    <html>
+      <head>
+        <title>Deliveries</title>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+      </head>
+      <body class="bg-light">
+        <div class="container py-4">
+          <div class="d-flex flex-wrap align-items-center justify-content-between mb-3">
+            <div>
+              <h2 class="mb-0">Deliveries</h2>
+              <div class="text-muted small">/ui/deliveries</div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <button id="refreshBtn" class="btn btn-outline-secondary btn-sm">Refresh</button>
+              <div class="text-muted small" id="lastUpdated"></div>
+            </div>
+          </div>
+
+          <div class="row g-2 mb-3">
+            <div class="col-sm-5">
+              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
+            </div>
+            <div class="col-sm-3">
+              <select id="statusFilter" class="form-select form-select-sm">
+                <option value="">All statuses</option>
+                <option>WAITING_FOR_SITE</option>
+                <option>CHECKING_SITE</option>
+                <option>READY_TO_SEND</option>
+                <option>COMPLETED_PENDING_SEND</option>
+                <option>FAILED</option>
+                <option>SENDING</option>
+                <option>SENT</option>
+              </select>
+            </div>
+            <div class="col-sm-2">
+              <button id="applyFilters" class="btn btn-sm btn-primary w-100">Apply</button>
+            </div>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-sm align-middle table-hover bg-white shadow-sm">
+              <thead class="table-light">
+                <tr>
+                  <th scope="col">Client</th>
+                  <th scope="col">Job ID</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Created</th>
+                  <th scope="col">Delivery URL</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="deliveriesBody">
+                <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <script>
+          const body = document.getElementById("deliveriesBody");
+          const refreshBtn = document.getElementById("refreshBtn");
+          const lastUpdated = document.getElementById("lastUpdated");
+          const clientFilter = document.getElementById("clientFilter");
+          const statusFilter = document.getElementById("statusFilter");
+          const applyFilters = document.getElementById("applyFilters");
+
+          function formatDate(ts){
+            if (!ts) return "";
+            try {
+              const d = new Date(ts);
+              return d.toLocaleString();
+            } catch (_) {
+              return "";
+            }
+          }
+
+          async function apiJSON(url, opts={}){
+            const res = await fetch(url, opts);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+          }
+
+          async function loadDeliveries(){
+            body.innerHTML = `<tr><td colspan="6" class="text-muted">Loading…</td></tr>`;
+            const params = new URLSearchParams();
+            const client = (clientFilter.value || "").trim();
+            const status = (statusFilter.value || "").trim();
+            if (client) params.set("client", client);
+            if (status) params.set("status", status);
+
+            let data;
+            try {
+              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
+            } catch (e) {
+              body.innerHTML = `<tr><td colspan="6" class="text-danger">Failed to load deliveries.</td></tr>`;
+              return;
+            }
+
+            const items = data.items || [];
+            if (!items.length){
+              body.innerHTML = `<tr><td colspan="6" class="text-muted">No deliveries found.</td></tr>`;
+              return;
+            }
+
+            body.innerHTML = items.map(item => {
+              const urlValue = item.override_target_url || "";
+              const placeholder = item.default_target_url || "";
+              return `
+                <tr>
+                  <td>${item.client_name || ""}</td>
+                  <td class="text-monospace small">${item.job_id || ""}</td>
+                  <td>${item.status || ""}</td>
+                  <td class="text-muted small">${formatDate(item.created_at)}</td>
+                  <td>
+                    <input id="delivery-url-${item.id}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
+                  </td>
+                  <td class="text-nowrap">
+                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}')">Send</button>
+                  </td>
+                </tr>
+              `;
+            }).join("");
+
+            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+          }
+
+          async function sendNow(id){
+            const input = document.getElementById(`delivery-url-${id}`);
+            const url = (input ? input.value : "").trim();
+            if (!url){
+              alert("Please enter a Delivery URL first.");
+              return;
+            }
+            try {
+              await apiJSON(`/ui/deliveries/${id}/override-url`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({override_target_url: url})
+              });
+              await apiJSON(`/ui/deliveries/${id}/send-now`, { method: "POST" });
+              await loadDeliveries();
+            } catch (e) {
+              alert("Failed to send. Check server logs.");
+            }
+          }
+
+          refreshBtn.addEventListener("click", loadDeliveries);
+          applyFilters.addEventListener("click", loadDeliveries);
+
+          loadDeliveries();
+        </script>
+      </body>
+    </html>
+    """
+    return HTMLResponse(html)
 
 
 @router.get("/queue", response_class=HTMLResponse)
