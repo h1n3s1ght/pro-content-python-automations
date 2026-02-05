@@ -3,7 +3,13 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from .models import FinalCopyOutput, HomePayload, AboutPayload, SEOPageItem, UtilityAboutItem
+from .models import (
+    FinalCopyOutput,
+    HomePayload,
+    AboutPayload,
+    SEOPageItem,
+    UtilityPageOutput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +18,14 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 def _clean_str(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _string_or_empty(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _non_empty_str(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() != ""
 
 
 def _slugify(value: Any) -> str:
@@ -91,6 +105,153 @@ def _derive_skip_path(this_page: Dict[str, Any]) -> str:
     return f"/skipped/{slug}"
 
 
+def _is_utility_payload(payload: Dict[str, Any]) -> bool:
+    cpt = _clean_str(payload.get("content_page_type"))
+    return cpt in {"about-why", "about-team"}
+
+
+def _extract_utility_source(env: Dict[str, Any]) -> tuple[Dict[str, Any], str] | None:
+    kind = _clean_str(env.get("page_kind"))
+    if kind == "utility_page":
+        src = env.get("utility_page") if isinstance(env.get("utility_page"), dict) else env
+        page_path = _string_or_empty(src.get("path")) or _string_or_empty(env.get("path"))
+        return src, page_path
+    if _is_utility_payload(env):
+        src = env
+        page_path = _string_or_empty(src.get("path"))
+        return src, page_path
+    utility_payload = env.get("utility_page")
+    if isinstance(utility_payload, dict) and _is_utility_payload(utility_payload):
+        page_path = _string_or_empty(utility_payload.get("path")) or _string_or_empty(env.get("path"))
+        return utility_payload, page_path
+    return None
+
+
+def _slug_from_path(page_path: str) -> str:
+    if not page_path:
+        return ""
+    trimmed = page_path.strip("/")
+    if not trimmed:
+        return ""
+    return trimmed.split("/")[-1]
+
+
+def _derive_utility_slug(page_path: str, page_title: str) -> str:
+    slug = _slug_from_path(page_path)
+    if slug:
+        return slug
+    return _slugify(page_title)
+
+
+def _derive_positioning_subtitle(page_title: str) -> str:
+    if _non_empty_str(page_title):
+        return f"About {page_title.strip()}"
+    return ""
+
+
+def _build_about_content(src: Dict[str, Any], page_title: str) -> Dict[str, Any]:
+    hero = src.get("about_hero")
+    hero = hero if isinstance(hero, dict) else {}
+    guide = src.get("about_guide")
+    guide = guide if isinstance(guide, dict) else {}
+    values = src.get("about_values")
+    values = values if isinstance(values, dict) else {}
+
+    hero_title = _string_or_empty(hero.get("title"))
+    hero_content = _string_or_empty(hero.get("content"))
+    guide_content = _string_or_empty(guide.get("content"))
+    values_subtitle = _string_or_empty(values.get("subtitle"))
+
+    title = hero_title if _non_empty_str(hero_title) else page_title
+    if _non_empty_str(values_subtitle):
+        subtitle = values_subtitle
+    else:
+        subtitle = _derive_positioning_subtitle(page_title)
+
+    if hero_content and guide_content:
+        content = f"{hero_content}\n\n{guide_content}"
+    else:
+        content = hero_content or guide_content
+
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "content": content,
+    }
+
+
+def _build_about_values(src: Dict[str, Any]) -> Dict[str, Any]:
+    values = src.get("about_values")
+    values = values if isinstance(values, dict) else {}
+    raw_items = values.get("about_values_content")
+    items: List[Dict[str, Any]] = []
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            if isinstance(item, dict):
+                heading = item.get("heading")
+                content = item.get("content")
+                items.append(
+                    {
+                        "heading": heading if isinstance(heading, str) else "",
+                        "content": content if isinstance(content, str) else "",
+                    }
+                )
+            if len(items) == 4:
+                break
+    while len(items) < 4:
+        items.append({"heading": "", "content": ""})
+
+    return {
+        "title": _string_or_empty(values.get("title")),
+        "subtitle": _string_or_empty(values.get("subtitle")),
+        "about_values_content": items,
+    }
+
+
+def _build_about_cta(src: Dict[str, Any]) -> Dict[str, Any]:
+    cta = src.get("about_cta")
+    cta = cta if isinstance(cta, dict) else {}
+    return {
+        "title": _string_or_empty(cta.get("title")),
+        "content": _string_or_empty(cta.get("content")),
+    }
+
+
+def _extract_page_title(src: Dict[str, Any]) -> str:
+    raw_title = src.get("page_title")
+    if _non_empty_str(raw_title):
+        return raw_title
+    hero = src.get("about_hero")
+    hero = hero if isinstance(hero, dict) else {}
+    hero_title = hero.get("title")
+    if _non_empty_str(hero_title):
+        return hero_title
+    return ""
+
+
+def _build_utility_page(src: Dict[str, Any], page_path: str) -> Dict[str, Any]:
+    page_title = _extract_page_title(src)
+    slug = _derive_utility_slug(page_path, page_title)
+    return {
+        "page_id": None,
+        "page_title": page_title,
+        "slug": slug,
+        "html_title": _string_or_empty(src.get("html_title")),
+        "meta_description": _string_or_empty(src.get("meta_description")),
+        "about_content": _build_about_content(src, page_title),
+        "about_values": _build_about_values(src),
+        "about_cta": _build_about_cta(src),
+    }
+
+
+def _upsert_utility_page(pages: List[UtilityPageOutput], page: UtilityPageOutput) -> None:
+    for idx, existing in enumerate(pages):
+        if existing.slug == page.slug:
+            pages[idx] = page
+            return
+    pages.append(page)
+
+
 def _resolve_path(kind: str, env: Dict[str, Any], payload: Dict[str, Any]) -> str:
     this_page = env.get("this_page")
     if not isinstance(this_page, dict):
@@ -135,10 +296,6 @@ def _validate_final_paths(final: FinalCopyOutput) -> None:
         duplicates = sorted({p for p in seo_paths if seo_paths.count(p) > 1})
         raise ValueError(f"duplicate seo_page paths: {duplicates}")
 
-    for idx, page in enumerate(final.utility_pages):
-        if not _clean_str(page.path):
-            raise ValueError(f"utility_pages[{idx}] missing path")
-
 
 def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -150,6 +307,19 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     for env in page_envelopes:
         if not env:
+            continue
+        if isinstance(env, dict):
+            utility_source = _extract_utility_source(env)
+        else:
+            utility_source = None
+        if utility_source is not None:
+            src, page_path = utility_source
+            src_page_title = src.get("page_title")
+            if _non_empty_str(src_page_title):
+                log_path = page_path or f"/{_slugify(src_page_title)}"
+                logger.info("utility_page.page_title preserved for %s", log_path)
+            utility_payload = _build_utility_page(src, page_path)
+            _upsert_utility_page(final.utility_pages, UtilityPageOutput.model_validate(utility_payload))
             continue
         kind = _clean_str(env.get("page_kind"))
         if kind == "home" and "home" in env:
@@ -167,13 +337,6 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
             _sanitize_page_title(payload)
             payload["path"] = _resolve_path(kind, env, payload)
             final.seo_pages.append(SEOPageItem.model_validate(payload))
-        elif kind == "utility_page" and "utility_page" in env:
-            payload = dict(env.get("utility_page") or {})
-            _sanitize_page_title(payload)
-            payload["path"] = _resolve_path(kind, env, payload)
-            if "page_title" in payload and isinstance(payload.get("page_title"), str):
-                logger.info("utility_page.page_title preserved for %s", payload["path"])
-            final.utility_pages.append(UtilityAboutItem.model_validate(payload))
         else:
             # skip or unknown
             pass
@@ -191,9 +354,6 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
     if isinstance(output.get("about"), dict):
         _drop_page_title_if_none(output["about"])
     for page in output.get("seo_pages") or []:
-        if isinstance(page, dict):
-            _drop_page_title_if_none(page)
-    for page in output.get("utility_pages") or []:
         if isinstance(page, dict):
             _drop_page_title_if_none(page)
     return output

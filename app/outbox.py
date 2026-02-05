@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func, update
@@ -12,6 +13,7 @@ from .db import get_sessionmaker
 from .db_models import DeliveryOutbox
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+_CONDENSE_RE = re.compile(r"[^a-z0-9]+")
 READY_STATUSES = ("READY", "READY_TO_SEND", "FAILED", "COMPLETED_PENDING_SEND")
 
 
@@ -23,6 +25,12 @@ def slugify(value: Any) -> str:
     text = _clean_str(value).lower()
     text = _SLUG_RE.sub("-", text)
     return text.strip("-")
+
+
+def condense_name(value: Any) -> str:
+    text = _clean_str(value).lower()
+    text = _CONDENSE_RE.sub("", text)
+    return text.strip()
 
 
 def _job_details_base_url(job_details: Dict[str, Any]) -> str:
@@ -66,14 +74,29 @@ def build_default_target_url(client_name: str, job_details: Dict[str, Any]) -> s
     return f"{base_url}{_resolve_target_path()}"
 
 
+def build_preview_url(condensed_name: str) -> str:
+    base_domain = _clean_str(os.getenv("PREVIEW_BASE_DOMAIN", "wp-premium-hosting.com"))
+    namespace = _clean_str(os.getenv("PREVIEW_NAMESPACE", "kaseya"))
+    if not condensed_name:
+        raise ValueError("condensed business name missing for preview URL")
+    if not base_domain:
+        raise ValueError("PREVIEW_BASE_DOMAIN is required for preview URL")
+    if not namespace:
+        raise ValueError("PREVIEW_NAMESPACE is required for preview URL")
+    return f"https://{condensed_name}.{base_domain}/wp-json/{namespace}/site/status"
+
+
 def enqueue_delivery_outbox(
     *,
     job_id: str,
     client_name: str,
     payload_s3_key: str,
     default_target_url: str,
+    preview_url: str | None = None,
+    site_check_next_at: datetime | None = None,
+    site_check_attempts: int = 0,
     status: str = "COMPLETED_PENDING_SEND",
-) -> None:
+) -> uuid.UUID | None:
     stmt = (
         insert(DeliveryOutbox)
         .values(
@@ -81,6 +104,9 @@ def enqueue_delivery_outbox(
             client_name=client_name,
             payload_s3_key=payload_s3_key,
             default_target_url=default_target_url,
+            preview_url=preview_url,
+            site_check_next_at=site_check_next_at,
+            site_check_attempts=site_check_attempts,
             status=status,
         )
         .on_conflict_do_update(
@@ -89,17 +115,118 @@ def enqueue_delivery_outbox(
                 "client_name": client_name,
                 "payload_s3_key": payload_s3_key,
                 "default_target_url": default_target_url,
+                "preview_url": preview_url,
+                "site_check_next_at": site_check_next_at,
+                "site_check_attempts": site_check_attempts,
                 "status": status,
                 "updated_at": func.now(),
             },
         )
+        .returning(DeliveryOutbox.id)
     )
 
     session_factory = get_sessionmaker()
     session = session_factory()
     try:
-        session.execute(stmt)
+        row = session.execute(stmt).scalar_one_or_none()
         session.commit()
+        return row
+    finally:
+        session.close()
+
+
+def claim_site_check(delivery_id: Any) -> Optional[Dict[str, Any]]:
+    delivery_uuid = _normalize_uuid(delivery_id)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        stmt = (
+            update(DeliveryOutbox)
+            .where(
+                DeliveryOutbox.id == delivery_uuid,
+                DeliveryOutbox.status == "WAITING_FOR_SITE",
+            )
+            .values(
+                status="CHECKING_SITE",
+                updated_at=func.now(),
+            )
+            .returning(
+                DeliveryOutbox.id,
+                DeliveryOutbox.job_id,
+                DeliveryOutbox.client_name,
+                DeliveryOutbox.payload_s3_key,
+                DeliveryOutbox.default_target_url,
+                DeliveryOutbox.override_target_url,
+                DeliveryOutbox.preview_url,
+                DeliveryOutbox.site_check_attempts,
+                DeliveryOutbox.site_check_next_at,
+                DeliveryOutbox.status,
+            )
+        )
+        row = session.execute(stmt).mappings().first()
+        session.commit()
+        return dict(row) if row else None
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def mark_site_ready(delivery_id: Any) -> bool:
+    delivery_uuid = _normalize_uuid(delivery_id)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        stmt = (
+            update(DeliveryOutbox)
+            .where(DeliveryOutbox.id == delivery_uuid, DeliveryOutbox.status == "CHECKING_SITE")
+            .values(
+                status="READY_TO_SEND",
+                site_check_next_at=None,
+                last_error=None,
+                updated_at=func.now(),
+            )
+        )
+        result = session.execute(stmt)
+        session.commit()
+        return result.rowcount > 0
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def mark_site_check_failed(
+    delivery_id: Any,
+    *,
+    next_check_at: datetime | None,
+    attempts: int,
+    error_message: Any,
+) -> bool:
+    delivery_uuid = _normalize_uuid(delivery_id)
+    err = _clean_str(error_message)[:2000]
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        stmt = (
+            update(DeliveryOutbox)
+            .where(DeliveryOutbox.id == delivery_uuid, DeliveryOutbox.status == "CHECKING_SITE")
+            .values(
+                status="WAITING_FOR_SITE",
+                site_check_next_at=next_check_at,
+                site_check_attempts=attempts,
+                last_error=err,
+                updated_at=func.now(),
+            )
+        )
+        result = session.execute(stmt)
+        session.commit()
+        return result.rowcount > 0
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
@@ -134,6 +261,7 @@ def claim_delivery(delivery_id: Any) -> Optional[Dict[str, Any]]:
                 DeliveryOutbox.payload_s3_key,
                 DeliveryOutbox.default_target_url,
                 DeliveryOutbox.override_target_url,
+                DeliveryOutbox.preview_url,
                 DeliveryOutbox.status,
                 DeliveryOutbox.attempt_count,
             )

@@ -15,9 +15,12 @@ class DeliveryOutboxSchema(BaseModel):
     payload_s3_key: str
     default_target_url: str
     override_target_url: str | None = None
+    preview_url: str | None = None
     status: str
     scheduled_for: datetime | None = None
     attempt_count: int
+    site_check_attempts: int
+    site_check_next_at: datetime | None = None
     last_error: str | None = None
     created_at: datetime
     updated_at: datetime

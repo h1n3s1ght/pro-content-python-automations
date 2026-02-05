@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 from .sitemap import generate_sitemap
@@ -11,7 +12,7 @@ from .s3_upload import datetime_cst_stamp, upload_sitemap, upload_copy
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_debug, log_warn, log_error
 from .storage import get_progress, set_progress, is_canceled, is_paused
-from .outbox import build_default_target_url, enqueue_delivery_outbox
+from .outbox import build_default_target_url, build_preview_url, condense_name, enqueue_delivery_outbox
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
@@ -248,14 +249,33 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         else:
             try:
                 default_target_url = build_default_target_url(client_name, job_details)
-                await asyncio.to_thread(
+                condensed_source = business_name or client_name
+                condensed = condense_name(condensed_source)
+                if not condensed:
+                    await log_w("preview_url_skipped: missing_condensed_name")
+                preview_url = ""
+                if condensed:
+                    try:
+                        preview_url = build_preview_url(condensed)
+                    except Exception as e:
+                        await log_w(f"preview_url_exception: {e}")
+                initial_status = "WAITING_FOR_SITE" if preview_url else "FAILED"
+                delivery_id = await asyncio.to_thread(
                     enqueue_delivery_outbox,
                     job_id=job_id_value,
                     client_name=client_name,
                     payload_s3_key=s3_key,
                     default_target_url=default_target_url,
+                    preview_url=preview_url or None,
+                    site_check_next_at=datetime.now(timezone.utc) if preview_url else None,
+                    site_check_attempts=0,
+                    status=initial_status,
                 )
                 await log_i(f"outbox_enqueued: {default_target_url}")
+                if preview_url:
+                    await log_i(f"preview_url_enqueued: {preview_url}")
+                if delivery_id:
+                    await log_i(f"outbox_delivery_id: {delivery_id}")
             except Exception as e:
                 await log_e(f"outbox_exception: {e}")
     else:

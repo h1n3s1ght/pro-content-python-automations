@@ -53,6 +53,71 @@ def _new_client() -> OpenAI:
     )
 
 
+def _payload_path(payload: Dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    this_page = payload.get("this_page")
+    if not isinstance(this_page, dict):
+        return ""
+    return str(this_page.get("path") or "")
+
+
+def _unwrap_content(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return data
+    inner = data.get("data")
+    if isinstance(inner, dict) and "content" in inner:
+        return inner.get("content")
+    if isinstance(data.get("content"), dict):
+        return data.get("content")
+    return data
+
+
+def _coerce_envelope(data: Any, payload: Dict[str, Any]) -> Any:
+    data = _unwrap_content(data)
+    if not isinstance(data, dict):
+        return data
+
+    if "page_kind" in data:
+        if not data.get("path"):
+            path = _payload_path(payload)
+            if path:
+                data = dict(data)
+                data["path"] = path
+        return data
+
+    if "utility_page" in data:
+        utility = data.get("utility_page")
+        if isinstance(utility, dict):
+            path = data.get("path") or utility.get("path") or _payload_path(payload)
+            return {"page_kind": "utility_page", "path": path, "utility_page": utility}
+
+    content_type = str(data.get("content_page_type") or "").strip()
+    if content_type in {"about-why", "about-team"}:
+        path = data.get("path") or _payload_path(payload)
+        return {"page_kind": "utility_page", "path": path, "utility_page": data}
+
+    if "home" in data:
+        path = data.get("path") or _payload_path(payload) or "/"
+        return {"page_kind": "home", "path": path, "home": data.get("home")}
+
+    if "about" in data:
+        path = data.get("path") or _payload_path(payload) or "/about"
+        return {"page_kind": "about", "path": path, "about": data.get("about")}
+
+    if "seo_page" in data:
+        path = data.get("path") or _payload_path(payload)
+        return {"page_kind": "seo_page", "path": path, "seo_page": data.get("seo_page")}
+
+    if isinstance(data.get("fields"), dict) and (
+        data.get("post_title") or data.get("post_name") or data.get("seo_page_type")
+    ):
+        path = data.get("path") or _payload_path(payload)
+        return {"page_kind": "seo_page", "path": path, "seo_page": data}
+
+    return data
+
+
 def run_copy_streaming_blocking(
     payload: Dict[str, Any],
     log_lines: Optional[List[str]] = None,
@@ -97,7 +162,8 @@ def run_copy_streaming_blocking(
 
     raw = handler.text()
     data = json.loads(raw)
-    validated = EnvelopeAdapter.validate_python(data)
+    coerced = _coerce_envelope(data, payload)
+    validated = EnvelopeAdapter.validate_python(coerced)
     return json.loads(validated.model_dump_json())
 
 

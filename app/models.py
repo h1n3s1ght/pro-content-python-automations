@@ -274,12 +274,38 @@ AssistantEnvelope = Union[HomeEnvelope, AboutEnvelope, SEOEnvelope, UtilityEnvel
 # -------------------------
 # Final compiled output schema
 # -------------------------
+class UtilityAboutContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = ""
+    subtitle: str = ""
+    content: str = ""
+
+
+class UtilityAboutValues(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = ""
+    subtitle: str = ""
+    about_values_content: List[HeadingItem] = Field(default_factory=list)
+
+
+class UtilityPageOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    page_id: None = None
+    page_title: str = ""
+    slug: str = ""
+    html_title: str = ""
+    meta_description: str = ""
+    about_content: UtilityAboutContent = Field(default_factory=UtilityAboutContent)
+    about_values: UtilityAboutValues = Field(default_factory=UtilityAboutValues)
+    about_cta: CTA = Field(default_factory=CTA)
+
+
 class FinalCopyOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     home: HomePayload = Field(default_factory=HomePayload)
     about: AboutPayload = Field(default_factory=AboutPayload)
     seo_pages: List[SEOPageItem] = Field(default_factory=list)
-    utility_pages: List[UtilityAboutItem] = Field(default_factory=list)
+    utility_pages: List[UtilityPageOutput] = Field(default_factory=list)
 
 
 # -------------------------

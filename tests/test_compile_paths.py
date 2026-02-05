@@ -19,8 +19,11 @@ def test_compile_final_paths_present_and_canonical():
         },
         {
             "page_kind": "utility_page",
-            "path": "",
-            "utility_page": {"content_page_type": "about-why", "html_title": "Why Choose Us"},
+            "path": "/about/why-choose-us",
+            "utility_page": {
+                "content_page_type": "about-why",
+                "html_title": "Why Choose Us",
+            },
         },
     ]
 
@@ -33,8 +36,20 @@ def test_compile_final_paths_present_and_canonical():
     assert seo_paths == ["/services/hvac-repair", "/industries/healthcare"]
     assert len(seo_paths) == len(set(seo_paths))
 
-    assert final["utility_pages"][0]["path"] == "/about/why-choose-us"
-    assert all(page["path"] for page in final["utility_pages"])
+    utility = final["utility_pages"][0]
+    assert utility["page_id"] is None
+    assert utility["slug"] == "why-choose-us"
+    assert set(utility.keys()) == {
+        "page_id",
+        "page_title",
+        "slug",
+        "html_title",
+        "meta_description",
+        "about_content",
+        "about_values",
+        "about_cta",
+    }
+    assert len(utility["about_values"]["about_values_content"]) == 4
 
 
 def test_compile_final_raises_on_missing_seo_slug():

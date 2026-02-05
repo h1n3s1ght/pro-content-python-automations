@@ -21,6 +21,12 @@ Canonical internal field names remain `snake_case` for storage and downstream pr
 - `DELIVERY_MODE` (`zapier` or `direct`, default `zapier`).
 - `ZAPIER_WEBHOOK_URL` (required when `DELIVERY_MODE=zapier`).
 - `DELIVERY_HTTP_TIMEOUT` (seconds, default `30`).
+- `PREVIEW_BASE_DOMAIN` (default `wp-premium-hosting.com`).
+- `PREVIEW_NAMESPACE` (default `kaseya`).
+- `SITE_CHECK_TIMEOUT` (seconds, default `10`).
+- `SITE_CHECK_INITIAL_INTERVAL_SECONDS` (default `300`).
+- `SITE_CHECK_INITIAL_ATTEMPTS` (default `12`).
+- `SITE_CHECK_LONG_INTERVAL_SECONDS` (default `3600`).
 - If your webhook payload includes `job_details.base_url`, it overrides the base URL template.
 
 ## Admin UI

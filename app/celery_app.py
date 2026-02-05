@@ -30,5 +30,9 @@ celery_app.conf.update(
             "task": "app.tasks.enqueue_due_deliveries",
             "schedule": crontab(minute=0, hour=8),
         },
+        "delivery-site-checks": {
+            "task": "app.tasks.enqueue_due_site_checks",
+            "schedule": crontab(minute="*/1"),
+        },
     },
 )

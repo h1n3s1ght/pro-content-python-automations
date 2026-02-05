@@ -89,3 +89,16 @@ def upload_copy(metadata: Dict[str, Any], final_copy: Dict[str, Any], stamp: str
 def upload_monthly_logs(month_name: str, year: int, logs: Any) -> str:
     filename = build_monthly_logs_filename(month_name, year)
     return upload_json(S3_MONTHLY_LOGS_PREFIX, filename, logs)
+
+
+def download_json(key: str) -> Any:
+    if not key:
+        return None
+    try:
+        resp = _s3.get_object(Bucket=S3_BUCKET, Key=key)
+        body = resp["Body"].read()
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        return json.loads(body)
+    except Exception:
+        return None

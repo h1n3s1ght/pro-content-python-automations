@@ -25,6 +25,8 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 STATUS_OPTIONS = [
     "",
+    "WAITING_FOR_SITE",
+    "CHECKING_SITE",
     "COMPLETED_PENDING_SEND",
     "READY_TO_SEND",
     "READY",

@@ -19,7 +19,7 @@ def test_compile_keeps_utility_page_title():
     assert final["utility_pages"][0]["page_title"] == "Why Choose Us"
 
 
-def test_compile_omits_page_title_when_missing():
+def test_compile_derives_page_title_from_hero():
     envelopes = [
         {
             "page_kind": "utility_page",
@@ -27,10 +27,11 @@ def test_compile_omits_page_title_when_missing():
             "utility_page": {
                 "content_page_type": "about-why",
                 "html_title": "Why Choose Us",
+                "about_hero": {"title": "Why Choose Us"},
             },
         }
     ]
 
     final = compile_final(envelopes)
 
-    assert "page_title" not in final["utility_pages"][0]
+    assert final["utility_pages"][0]["page_title"] == "Why Choose Us"
