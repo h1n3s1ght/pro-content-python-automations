@@ -83,20 +83,16 @@ case "${MODE}" in
     exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
     ;;
   worker)
-    run_migrations
     exec celery -A app.celery_app.celery_app worker -l info --concurrency="${CELERY_CONCURRENCY:-2}"
     ;;
   beat)
-    run_migrations
     exec celery -A app.celery_app.celery_app beat -l info
     ;;
   call)
-    run_migrations
     exec celery -A app.celery_app.celery_app call "$@"
     ;;
   *)
-    # Passthrough: still migrate first for safety, then exec the provided command.
-    run_migrations
+    # Passthrough: exec the provided command as-is.
     exec "${MODE}" "$@"
     ;;
 esac
