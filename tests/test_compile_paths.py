@@ -28,15 +28,16 @@ def test_compile_final_paths_present_and_canonical():
     ]
 
     final = compile_final(envelopes)
+    content = final["data"]["content"]
 
-    assert final["home"]["path"] == "/"
-    assert final["about"]["path"] == "/about"
+    assert content["home"]["path"] == "/"
+    assert content["about"]["path"] == "/about"
 
-    seo_paths = [page["path"] for page in final["seo_pages"]]
+    seo_paths = [page["path"] for page in content["seo_pages"]]
     assert seo_paths == ["/services/hvac-repair", "/industries/healthcare"]
     assert len(seo_paths) == len(set(seo_paths))
 
-    utility = final["utility_pages"][0]
+    utility = content["utility_pages"][0]
     assert utility["page_id"] is None
     assert utility["slug"] == "why-choose-us"
     assert set(utility.keys()) == {

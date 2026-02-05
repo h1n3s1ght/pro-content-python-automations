@@ -158,6 +158,7 @@ class AboutPayload(BaseModel):
     page_title: Optional[str] = None
     html_title: str = ""
     meta_description: str = ""
+    about_content: Optional["UtilityAboutContent"] = None
     about_hero: Hero = Field(default_factory=Hero)
     about_stakes: StakesAbout = Field(default_factory=StakesAbout)
     about_values: ValuesAbout = Field(default_factory=ValuesAbout)

@@ -221,6 +221,11 @@ def _extract_page_title(src: Dict[str, Any]) -> str:
     raw_title = src.get("page_title")
     if _non_empty_str(raw_title):
         return raw_title
+    about_content = src.get("about_content")
+    if isinstance(about_content, dict):
+        about_title = about_content.get("title")
+        if _non_empty_str(about_title):
+            return about_title
     hero = src.get("about_hero")
     hero = hero if isinstance(hero, dict) else {}
     hero_title = hero.get("title")
@@ -232,15 +237,46 @@ def _extract_page_title(src: Dict[str, Any]) -> str:
 def _build_utility_page(src: Dict[str, Any], page_path: str) -> Dict[str, Any]:
     page_title = _extract_page_title(src)
     slug = _derive_utility_slug(page_path, page_title)
+    about_content = src.get("about_content")
+    if isinstance(about_content, dict):
+        content_payload = {
+            "title": _string_or_empty(about_content.get("title")),
+            "subtitle": _string_or_empty(about_content.get("subtitle")),
+            "content": _string_or_empty(about_content.get("content")),
+        }
+    else:
+        content_payload = _build_about_content(src, page_title)
+
+    about_values = src.get("about_values")
+    values_payload = _build_about_values(src)
+    if isinstance(about_values, dict):
+        items = about_values.get("about_values_content") or []
+        if not isinstance(items, list):
+            items = []
+        while len(items) < 4:
+            items.append({"heading": "", "content": ""})
+        values_payload = {
+            "title": _string_or_empty(about_values.get("title")),
+            "subtitle": _string_or_empty(about_values.get("subtitle")),
+            "about_values_content": items[:4],
+        }
+
+    about_cta = src.get("about_cta")
+    cta_payload = _build_about_cta(src)
+    if isinstance(about_cta, dict):
+        cta_payload = {
+            "title": _string_or_empty(about_cta.get("title")),
+            "content": _string_or_empty(about_cta.get("content")),
+        }
     return {
         "page_id": None,
         "page_title": page_title,
         "slug": slug,
         "html_title": _string_or_empty(src.get("html_title")),
         "meta_description": _string_or_empty(src.get("meta_description")),
-        "about_content": _build_about_content(src, page_title),
-        "about_values": _build_about_values(src),
-        "about_cta": _build_about_cta(src),
+        "about_content": content_payload,
+        "about_values": values_payload,
+        "about_cta": cta_payload,
     }
 
 
@@ -356,4 +392,4 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
     for page in output.get("seo_pages") or []:
         if isinstance(page, dict):
             _drop_page_title_if_none(page)
-    return output
+    return {"data": {"content": output}}

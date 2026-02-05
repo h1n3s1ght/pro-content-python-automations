@@ -15,8 +15,9 @@ def test_compile_keeps_utility_page_title():
     ]
 
     final = compile_final(envelopes)
+    content = final["data"]["content"]
 
-    assert final["utility_pages"][0]["page_title"] == "Why Choose Us"
+    assert content["utility_pages"][0]["page_title"] == "Why Choose Us"
 
 
 def test_compile_derives_page_title_from_hero():
@@ -33,5 +34,6 @@ def test_compile_derives_page_title_from_hero():
     ]
 
     final = compile_final(envelopes)
+    content = final["data"]["content"]
 
-    assert final["utility_pages"][0]["page_title"] == "Why Choose Us"
+    assert content["utility_pages"][0]["page_title"] == "Why Choose Us"

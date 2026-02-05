@@ -78,6 +78,51 @@ def _coerce_envelope(data: Any, payload: Dict[str, Any]) -> Any:
     if not isinstance(data, dict):
         return data
 
+    if any(k in data for k in ("home", "about", "seo_pages", "utility_pages")) and "page_kind" not in data:
+        this_page = payload.get("this_page") if isinstance(payload, dict) else {}
+        content_type = str((this_page or {}).get("content_page_type") or "").strip().lower()
+        path = _payload_path(payload)
+
+        if content_type in {"home", "core-home"} and isinstance(data.get("home"), dict):
+            return {"page_kind": "home", "path": path or "/", "home": data.get("home")}
+        if content_type in {"about", "core-about"} and isinstance(data.get("about"), dict):
+            return {"page_kind": "about", "path": path or "/about", "about": data.get("about")}
+        if content_type in {"seo-service", "seo-industry", "seo-location", "service", "industry", "location"}:
+            seo_pages = data.get("seo_pages")
+            if isinstance(seo_pages, list) and seo_pages:
+                match = None
+                if path:
+                    for item in seo_pages:
+                        if isinstance(item, dict) and str(item.get("path") or "") == path:
+                            match = item
+                            break
+                return {
+                    "page_kind": "seo_page",
+                    "path": path or str((match or {}).get("path") or ""),
+                    "seo_page": match or seo_pages[0],
+                }
+        if content_type in {"about-why", "about-team"}:
+            utility_pages = data.get("utility_pages")
+            if isinstance(utility_pages, list) and utility_pages:
+                match = None
+                if path:
+                    slug = path.strip("/").split("/")[-1] if path else ""
+                    for item in utility_pages:
+                        if isinstance(item, dict) and str(item.get("slug") or "") == slug:
+                            match = item
+                            break
+                item = match or utility_pages[0]
+                utility_payload = {
+                    "content_page_type": content_type,
+                    "page_title": item.get("page_title") if isinstance(item, dict) else "",
+                    "html_title": item.get("html_title") if isinstance(item, dict) else "",
+                    "meta_description": item.get("meta_description") if isinstance(item, dict) else "",
+                    "about_content": item.get("about_content") if isinstance(item, dict) else {},
+                    "about_values": item.get("about_values") if isinstance(item, dict) else {},
+                    "about_cta": item.get("about_cta") if isinstance(item, dict) else {},
+                }
+                return {"page_kind": "utility_page", "path": path, "utility_page": utility_payload}
+
     if "page_kind" in data:
         if not data.get("path"):
             path = _payload_path(payload)
@@ -91,6 +136,23 @@ def _coerce_envelope(data: Any, payload: Dict[str, Any]) -> Any:
         if isinstance(utility, dict):
             path = data.get("path") or utility.get("path") or _payload_path(payload)
             return {"page_kind": "utility_page", "path": path, "utility_page": utility}
+
+    if isinstance(data.get("utility_pages"), list):
+        items = data.get("utility_pages") or []
+        first = items[0] if items else {}
+        path = _payload_path(payload)
+        this_page = payload.get("this_page") if isinstance(payload, dict) else {}
+        content_type = str((this_page or {}).get("content_page_type") or "").strip().lower()
+        utility_payload = {
+            "content_page_type": content_type,
+            "page_title": first.get("page_title") if isinstance(first, dict) else "",
+            "html_title": first.get("html_title") if isinstance(first, dict) else "",
+            "meta_description": first.get("meta_description") if isinstance(first, dict) else "",
+            "about_content": first.get("about_content") if isinstance(first, dict) else {},
+            "about_values": first.get("about_values") if isinstance(first, dict) else {},
+            "about_cta": first.get("about_cta") if isinstance(first, dict) else {},
+        }
+        return {"page_kind": "utility_page", "path": path, "utility_page": utility_payload}
 
     content_type = str(data.get("content_page_type") or "").strip()
     if content_type in {"about-why", "about-team"}:
