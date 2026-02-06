@@ -20,7 +20,7 @@ from .outbox import (
     mark_site_ready,
 )
 from .db import get_sessionmaker
-from .db_models import DeliveryOutbox
+from .db_models import DeliveryOutbox, RecentlyDeletedJobCopy
 from .workflow import run_workflow
 from .resume_workflow import run_resume_workflow
 from .storage import (
@@ -38,7 +38,6 @@ from .payload_store import (
     load_payload_json,
     maybe_archive_payload_to_s3,
     purge_payload_file,
-    retention_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -333,11 +332,6 @@ def send_delivery(self, delivery_id: str):
             if job_id:
                 if isinstance(content, dict):
                     maybe_archive_payload_to_s3(job_id, client_name or job_id, content)
-                seconds = retention_seconds()
-                if seconds:
-                    purge_local_payload.apply_async(args=[job_id], countdown=seconds)
-                else:
-                    purge_payload_file(job_id)
         except Exception as exc:
             logger.warning("send_delivery_post_success_hooks_failed delivery_id=%s err=%s", delivery_id, exc)
         return
@@ -449,3 +443,50 @@ def check_site_ready(self, delivery_id: str):
 )
 def purge_local_payload(self, job_id: str):
     return purge_payload_file(job_id)
+
+
+@celery_app.task(
+    name="app.tasks.finalize_deleted_job_copy",
+    bind=True,
+    autoretry_for=(),
+)
+def finalize_deleted_job_copy(self, job_id: str):
+    """
+    Final cleanup for a soft-deleted job copy:
+    - remove the recently-deleted DB row (when due)
+    - purge the on-disk payload file (best-effort)
+    """
+    job_id = str(job_id or "").strip()
+    if not job_id:
+        return False
+
+    now = datetime.now(timezone.utc)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        row = session.execute(
+            select(RecentlyDeletedJobCopy).where(RecentlyDeletedJobCopy.job_id == job_id)
+        ).scalar_one_or_none()
+        if row is None:
+            purge_payload_file(job_id)
+            return True
+
+        destroy_after = row.destroy_after
+        if destroy_after and destroy_after > now:
+            delay = int((destroy_after - now).total_seconds())
+            # Avoid ultra-short reschedules that can loop.
+            delay = max(delay, 60)
+            finalize_deleted_job_copy.apply_async(args=[job_id], countdown=delay)
+            return False
+
+        session.delete(row)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.exception("finalize_deleted_job_copy_failed job_id=%s err=%s", job_id, exc)
+        raise
+    finally:
+        session.close()
+
+    purge_payload_file(job_id)
+    return True

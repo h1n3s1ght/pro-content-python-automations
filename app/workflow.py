@@ -10,6 +10,7 @@ from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp
+from .copy_store import upsert_job_copy
 from .payload_store import save_payload_json
 from .sitemap_store import upsert_job_sitemap
 from .errors import OperationCanceled, PauseRequested
@@ -252,17 +253,41 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     await prog({"stage": "compile"})
     final_copy = compile_final(envelopes)
 
-    s3_key = ""
+    payload_ref = ""
+    db_copy_id = None
+    try:
+        if not job_id_value:
+            await log_w("copy_db_save_skipped: missing_job_id")
+        elif not client_name:
+            await log_w("copy_db_save_skipped: missing_client_name")
+        else:
+            db_copy_id = await asyncio.to_thread(
+                upsert_job_copy,
+                job_id=job_id_value,
+                client_name=client_name,
+                copy_data=final_copy,
+            )
+            if db_copy_id:
+                payload_ref = f"db:{job_id_value}"
+                await log_i(f"copy_saved_db: {db_copy_id}")
+    except Exception as e:
+        logger.warning("job=%s copy_db_save_failed err=%s", job_id_value, e)
+        await log_w(f"copy_db_save_failed: {e}")
+
+    disk_ref = ""
     try:
         logger.info("job=%s payload_store_start client=%s", job_id_value, client_name)
-        s3_key = save_payload_json(job_id_value, final_copy)
-        logger.info("job=%s payload_store_ok path=%s", job_id_value, s3_key)
-        await log_i(f"payload_stored: {s3_key}")
+        disk_ref = save_payload_json(job_id_value, final_copy)
+        logger.info("job=%s payload_store_ok path=%s", job_id_value, disk_ref)
+        await log_i(f"payload_stored: {disk_ref}")
     except Exception as e:
         logger.warning("job=%s payload_store_failed err=%s", job_id_value, e)
         await log_w(f"payload_store_failed: {e}")
 
-    if s3_key:
+    if disk_ref:
+        payload_ref = disk_ref
+
+    if payload_ref:
         if not job_id_value:
             await log_e("outbox_skipped: missing_job_id")
         elif not client_name:
@@ -337,7 +362,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     enqueue_delivery_outbox,
                     job_id=job_id_value,
                     client_name=client_name,
-                    payload_s3_key=s3_key,
+                    payload_s3_key=payload_ref,
                     default_target_url=default_target_url,
                     override_target_url=outbox_override_target_url,
                     preview_url=preview_url or None,
@@ -349,7 +374,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     "job=%s outbox_enqueued delivery_id=%s s3_key=%s",
                     job_id_value,
                     str(delivery_id) if delivery_id else "",
-                    s3_key,
+                    payload_ref,
                 )
                 await log_i(f"outbox_enqueued: {default_target_url}")
                 if outbox_override_target_url:
@@ -362,8 +387,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                 logger.exception("job=%s outbox_exception err=%s", job_id_value, e)
                 await log_e(f"outbox_exception: {e}")
     else:
-        logger.warning("job=%s outbox_skipped_missing_s3_key client=%s", job_id_value, client_name)
-        await log_w("outbox_skipped: missing_s3_key")
+        logger.warning("job=%s outbox_skipped_missing_payload_ref client=%s", job_id_value, client_name)
+        await log_w("outbox_skipped: missing_payload_ref")
 
     await prog({"stage": "completed", "current": ""})
     return final_copy

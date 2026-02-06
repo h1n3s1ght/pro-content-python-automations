@@ -24,7 +24,8 @@ from .storage import (
     pause_job,
     resume_job,
 )
-from .tasks import purge_local_payload, run_resume_job, send_delivery
+from .copy_store import SOFT_DELETE_HOURS_DEFAULT, soft_delete_job_copy
+from .tasks import finalize_deleted_job_copy, purge_local_payload, run_resume_job, send_delivery
 from .s3_upload import head_object_info
 
 router = APIRouter(prefix="/ui", tags=["ui"])
@@ -298,7 +299,11 @@ def send_now(delivery_id: UUID, session: Session = Depends(get_db_session)):
 
 
 @router.post("/deliveries/{delivery_id}/delete")
-def delete_failed_delivery(delivery_id: UUID, session: Session = Depends(get_db_session)):
+def delete_failed_delivery(
+    delivery_id: UUID,
+    delete_copy: bool = Query(default=False),
+    session: Session = Depends(get_db_session),
+):
     row = _get_delivery(session, delivery_id)
     if (row.status or "").upper() != "FAILED":
         raise HTTPException(status_code=400, detail="only FAILED deliveries can be deleted")
@@ -307,7 +312,26 @@ def delete_failed_delivery(delivery_id: UUID, session: Session = Depends(get_db_
     session.delete(row)
     session.commit()
 
-    # Keep payloads around briefly for troubleshooting; purge a week after deletion.
+    # Optionally delete the stored copy payload (Postgres soft-delete -> 48h grace -> permanent destroy).
+    # NOTE: /ui routes are currently unauthenticated; be mindful if this service is public.
+    if delete_copy:
+        try:
+            deleted_id = soft_delete_job_copy(job_id=job_id)
+            if deleted_id:
+                finalize_deleted_job_copy.apply_async(args=[job_id], countdown=int(SOFT_DELETE_HOURS_DEFAULT * 3600))
+                logger.info(
+                    "delivery_delete_soft_deleted_copy delivery_id=%s job_id=%s deleted_id=%s grace_hours=%s",
+                    str(delivery_id),
+                    job_id,
+                    str(deleted_id),
+                    SOFT_DELETE_HOURS_DEFAULT,
+                )
+        except Exception as exc:
+            # Don't block deleting the delivery row if copy cleanup fails.
+            logger.warning("delivery_delete_soft_delete_copy_failed delivery_id=%s job_id=%s err=%s", str(delivery_id), job_id, exc)
+
+    # Keep payload files around briefly for troubleshooting; purge a week after deletion.
+    # If delete_copy=true, finalize_deleted_job_copy will also purge the disk file earlier.
     purge_after_seconds = 7 * 24 * 60 * 60
     purge_local_payload.apply_async(args=[job_id], countdown=purge_after_seconds)
     logger.info(
@@ -476,10 +500,12 @@ async def deliveries_page():
           }
 
           async function deleteDelivery(id){
-            const ok = confirm("Delete this FAILED delivery? It will be removed from the list and its stored payload will be purged in 7 days.");
+            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
             if (!ok) return;
             try {
-              await apiJSON(`/ui/deliveries/${id}/delete`, { method: "POST" });
+              const alsoDeleteCopy = confirm("Also delete the stored job copy payload? It will move to Recently Deleted for 48 hours, then be destroyed.");
+              const qs = alsoDeleteCopy ? "?delete_copy=1" : "";
+              await apiJSON(`/ui/deliveries/${id}/delete${qs}`, { method: "POST" });
               await loadDeliveries();
             } catch (e) {
               alert("Failed to delete. Check server logs.");

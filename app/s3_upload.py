@@ -139,6 +139,9 @@ def download_json(key: str) -> Any:
 def head_object_info(key: str) -> Dict[str, Any] | None:
     if not key:
         return None
+    # DB ref support (when storing payloads in Postgres).
+    if isinstance(key, str) and key.startswith("db:"):
+        return {"type": "db", "job_id": key[len("db:") :].strip()}
     # Local payload file support (used when storing payloads on a Render Persistent Disk).
     path = key
     if isinstance(path, str) and path.startswith("file:"):

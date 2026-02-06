@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import json
 import os
 from datetime import datetime, timezone
 from typing import Iterable
@@ -11,11 +12,17 @@ from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Requ
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from .db import get_db_session
-from .db_models import DeliveryOutbox
-from .tasks import send_delivery
+from .db_models import DeliveryOutbox, JobCopy, RecentlyDeletedJobCopy
+from .copy_store import (
+    SOFT_DELETE_HOURS_DEFAULT,
+    list_job_copies,
+    list_recently_deleted_job_copies,
+    soft_delete_job_copy,
+)
+from .tasks import finalize_deleted_job_copy, send_delivery
 
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 
@@ -106,6 +113,20 @@ def _render_row(request: Request, delivery: DeliveryOutbox) -> HTMLResponse:
     )
 
 
+def _render_copy_row(request: Request, copy: JobCopy) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "partials/copy_row.html",
+        {"request": request, "copy": copy, "format_dt": _format_dt},
+    )
+
+
+def _render_deleted_copy_row(request: Request, copy: RecentlyDeletedJobCopy) -> HTMLResponse:
+    return templates.TemplateResponse(
+        "partials/recently_deleted_copy_row.html",
+        {"request": request, "copy": copy, "format_dt": _format_dt},
+    )
+
+
 @router.get("/deliveries", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
 def deliveries_page(
     request: Request,
@@ -132,6 +153,111 @@ def deliveries_page(
             "format_dt": _format_dt,
         },
     )
+
+
+@router.get("/copies", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def copies_page(
+    request: Request,
+    client: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    rows, total = list_job_copies(client_substring=(client or "").strip() or None, page=page, page_size=page_size)
+    has_prev = page > 1
+    has_next = page * page_size < total
+    return templates.TemplateResponse(
+        "admin_copies.html",
+        {
+            "request": request,
+            "copies": rows,
+            "client": client or "",
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_prev": has_prev,
+            "has_next": has_next,
+            "format_dt": _format_dt,
+        },
+    )
+
+
+@router.get("/copies/recently-deleted", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def recently_deleted_copies_page(
+    request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+):
+    rows, total = list_recently_deleted_job_copies(page=page, page_size=page_size)
+    has_prev = page > 1
+    has_next = page * page_size < total
+    return templates.TemplateResponse(
+        "admin_recently_deleted_copies.html",
+        {
+            "request": request,
+            "copies": rows,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_prev": has_prev,
+            "has_next": has_next,
+            "format_dt": _format_dt,
+        },
+    )
+
+
+@router.get("/copies/{job_id}", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def copy_view_page(
+    request: Request,
+    job_id: str,
+    session: Session = Depends(get_db_session),
+):
+    job_id = job_id.strip()
+    row = session.execute(select(JobCopy).where(JobCopy.job_id == job_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="copy not found")
+
+    pretty = json.dumps(row.copy_data or {}, ensure_ascii=False, indent=2)
+    return templates.TemplateResponse(
+        "admin_copy_view.html",
+        {
+            "request": request,
+            "copy": row,
+            "copy_json_pretty": pretty,
+            "format_dt": _format_dt,
+        },
+    )
+
+
+@router.get("/copies/{job_id}/download", dependencies=[Depends(require_admin_auth)])
+def copy_download(
+    job_id: str,
+    session: Session = Depends(get_db_session),
+):
+    job_id = job_id.strip()
+    row = session.execute(select(JobCopy).where(JobCopy.job_id == job_id)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="copy not found")
+    body = json.dumps(row.copy_data or {}, ensure_ascii=False, separators=(",", ":"))
+    filename = f"{job_id}.json"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return Response(content=body, media_type="application/json", headers=headers)
+
+
+@router.post("/copies/{job_id}/delete", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def copy_delete(
+    request: Request,
+    job_id: str,
+):
+    job_id = job_id.strip()
+    deleted_id = soft_delete_job_copy(job_id=job_id)
+    if deleted_id is None:
+        raise HTTPException(status_code=404, detail="copy not found")
+
+    # Schedule the final destroy after the grace period.
+    finalize_deleted_job_copy.apply_async(args=[job_id], countdown=int(SOFT_DELETE_HOURS_DEFAULT * 3600))
+
+    # Redirect back to the list.
+    return RedirectResponse(url="/admin/copies", status_code=303)
 
 
 @router.post("/deliveries/{delivery_id}/override-url", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])

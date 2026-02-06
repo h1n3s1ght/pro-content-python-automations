@@ -1,0 +1,19 @@
+<tr id="copy-{{ copy.job_id }}">
+  <td>{{ copy.client_name }}</td>
+  <td class="mono">{{ copy.job_id }}</td>
+  <td class="text-muted">{{ format_dt(copy.created_at) }}</td>
+  <td class="text-muted">{{ format_dt(copy.updated_at) }}</td>
+  <td class="text-nowrap">
+    <a class="btn btn-sm btn-outline-primary me-1" href="/admin/copies/{{ copy.job_id }}">View</a>
+    <a class="btn btn-sm btn-outline-secondary me-1" href="/admin/copies/{{ copy.job_id }}/download">Download</a>
+    <form
+      method="post"
+      action="/admin/copies/{{ copy.job_id }}/delete"
+      style="display:inline"
+      onsubmit="return confirm('Delete this job copy? It will remain in Recently Deleted for 48 hours before permanent destruction.')"
+    >
+      <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+    </form>
+  </td>
+</tr>
+

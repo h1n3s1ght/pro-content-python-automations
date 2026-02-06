@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from .copy_store import get_job_copy_data
 from .s3_upload import download_json, upload_delivered_copy
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,17 @@ def load_payload_json(ref: str) -> Any | None:
     if not ref:
         return None
 
+    # DB refs.
+    if ref.startswith("db:"):
+        job_id = ref[len("db:") :].strip()
+        if not job_id:
+            return None
+        try:
+            return get_job_copy_data(job_id)
+        except Exception as exc:
+            logger.warning("payload_db_read_failed job_id=%s err=%s", job_id, exc)
+            return None
+
     # Local file path refs.
     path = ref
     if ref.startswith("file:"):
@@ -65,6 +77,16 @@ def load_payload_json(ref: str) -> Any | None:
                 return json.load(f)
         except Exception as exc:
             logger.warning("payload_read_failed path=%s err=%s", path, exc)
+            # Fallback: if we can infer a job_id from the filename, try Postgres.
+            try:
+                job_id = os.path.splitext(os.path.basename(path))[0]
+                if job_id:
+                    data = get_job_copy_data(job_id)
+                    if data is not None:
+                        logger.info("payload_db_fallback_ok job_id=%s ref=%s", job_id, ref)
+                        return data
+            except Exception as exc2:
+                logger.warning("payload_db_fallback_failed ref=%s err=%s", ref, exc2)
             return None
 
     # Fallback: treat as S3 key (legacy / archived).
@@ -112,4 +134,3 @@ def retention_seconds() -> int:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
