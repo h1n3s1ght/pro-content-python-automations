@@ -9,8 +9,9 @@ from typing import Any, Dict, Optional, List
 from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
 from .compile import compile_final
-from .s3_upload import datetime_cst_stamp, upload_sitemap
+from .s3_upload import datetime_cst_stamp
 from .payload_store import save_payload_json
+from .sitemap_store import upsert_job_sitemap
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_debug, log_warn, log_error
 from .storage import get_progress, set_progress, is_canceled, is_paused
@@ -118,6 +119,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     sitemap_data = webhook_payload.get("sitemap_data")
     sitemap_log_lines: List[str] = []
+    sitemap_source = "generated"
     if not sitemap_data:
         sitemap_data = await generate_sitemap(
             metadata=metadata,
@@ -137,6 +139,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             sitemap_data = {}
     else:
         await log_i("sitemap_provided_in_payload")
+        sitemap_source = "provided"
 
     if sitemap_log_lines:
         for line in sitemap_log_lines:
@@ -144,11 +147,23 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     seo_keywords: List[str] = []
 
+    # Store sitemap in Postgres instead of S3 (S3 credentials may not be present/valid in Render).
     try:
-        s3_key = upload_sitemap(metadata, sitemap_data, stamp)
-        await log_i(f"sitemap_uploaded: {s3_key}")
+        if not job_id_value:
+            await log_w("sitemap_db_save_skipped: missing_job_id")
+        else:
+            sitemap_id = await asyncio.to_thread(
+                upsert_job_sitemap,
+                job_id=job_id_value,
+                client_name=client_name,
+                stamp=stamp,
+                source=sitemap_source,
+                sitemap_data=sitemap_data or {},
+            )
+            if sitemap_id:
+                await log_i(f"sitemap_saved_db: {sitemap_id}")
     except Exception as e:
-        await log_w(f"sitemap_upload_failed: {e}")
+        await log_w(f"sitemap_db_save_failed: {e}")
 
     rows: List[Dict[str, Any]] = list((sitemap_data or {}).get("rows") or [])
 

@@ -153,6 +153,8 @@ async def delivery_trace(job_id: str, session: Session = Depends(get_db_session)
     needles = (
         "sitemap_uploaded",
         "sitemap_upload_failed",
+        "sitemap_saved_db",
+        "sitemap_db_save_failed",
         "copy_uploaded",
         "copy_upload_failed",
         "payload_stored",
