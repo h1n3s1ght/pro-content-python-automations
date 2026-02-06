@@ -265,14 +265,57 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     except Exception as e:
                         await log_w(f"preview_url_exception: {e}")
 
-                # For manual Zapier deliveries, we only *need* override_target_url.
-                # default_target_url is kept as a non-null placeholder for the UI/database.
-                delivery_mode = str(os.getenv("DELIVERY_MODE", "zapier") or "zapier").strip().lower()
-                if delivery_mode == "zapier":
-                    base_domain = str(os.getenv("PREVIEW_BASE_DOMAIN", "wp-premium-hosting.com") or "").strip()
-                    default_target_url = f"https://{condensed}.{base_domain}" if (condensed and base_domain) else ""
-                else:
+                # Delivery modes:
+                # - manual: always requires user entry in /ui/deliveries (override_target_url)
+                # - zapier: attempts to pre-fill the delivery URL automatically; falls back to manual entry
+                # - automatic: RESERVED for future; will eventually fetch delivery URL from a DB and auto-send
+                #
+                # Notes for future DB-based delivery URL resolution:
+                # - Create a table keyed by client identifier (e.g. business_domain, client_name, or a stable client_id)
+                #   storing a "delivery_domain" like "https://example.com" or "https://foo.wp-premium-hosting.com".
+                # - In DELIVERY_MODE=zapier, look up that delivery_domain and pre-fill override_target_url when present.
+                # - In DELIVERY_MODE=automatic, do the same lookup, but also auto-trigger send_delivery (and potentially
+                #   re-enable readiness checks) when a delivery_domain exists. If missing, leave for manual entry.
+                delivery_mode = str(os.getenv("DELIVERY_MODE", "manual") or "manual").strip().lower()
+
+                # default_target_url is required (non-null) by the DB schema. For manual/zapier deliveries we treat it
+                # as a UI hint/placeholder, not necessarily the final destination.
+                base_domain = str(os.getenv("PREVIEW_BASE_DOMAIN", "wp-premium-hosting.com") or "").strip()
+                preview_base_url = f"https://{condensed}.{base_domain}" if (condensed and base_domain) else ""
+                default_target_url = preview_base_url
+                outbox_override_target_url: str | None = None
+
+                if delivery_mode in ("zapier", "automatic"):
+                    # Minimal "automatic" resolution (safe, optional):
+                    # - If upstream provides a base_url/delivery_url in job_details, use it as the prefilled value.
+                    # - Otherwise, leave blank so the UI prompts the user to enter one.
+                    #
+                    # TODO: Replace/augment this with a DB lookup (see notes above).
+                    auto_url = ""
+                    if isinstance(job_details, dict):
+                        for key in (
+                            "delivery_url",
+                            "deliveryUrl",
+                            "delivery_domain",
+                            "deliveryDomain",
+                            "base_url",
+                            "baseUrl",
+                            "baseURL",
+                        ):
+                            v = str(job_details.get(key) or "").strip()
+                            if v:
+                                auto_url = v.rstrip("/")
+                                break
+                    if auto_url:
+                        outbox_override_target_url = auto_url
+                elif delivery_mode == "manual":
+                    # Force manual entry: do not pre-fill override_target_url.
+                    pass
+                elif delivery_mode == "direct":
+                    # Legacy path: send directly to the WP endpoint (bypasses Zapier).
                     default_target_url = build_default_target_url(client_name, job_details)
+                else:
+                    await log_w(f"delivery_mode_unknown_falling_back_to_manual: {delivery_mode}")
 
                 initial_status = "COMPLETED_PENDING_SEND"
                 delivery_id = await asyncio.to_thread(
@@ -281,6 +324,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     client_name=client_name,
                     payload_s3_key=s3_key,
                     default_target_url=default_target_url,
+                    override_target_url=outbox_override_target_url,
                     preview_url=preview_url or None,
                     site_check_next_at=None,
                     site_check_attempts=0,
@@ -293,6 +337,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                     s3_key,
                 )
                 await log_i(f"outbox_enqueued: {default_target_url}")
+                if outbox_override_target_url:
+                    await log_i(f"delivery_url_prefilled: {outbox_override_target_url}")
                 if preview_url:
                     await log_i(f"preview_url_enqueued: {preview_url}")
                 if delivery_id:

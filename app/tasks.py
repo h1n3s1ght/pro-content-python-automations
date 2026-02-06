@@ -43,7 +43,7 @@ from .payload_store import (
 
 logger = logging.getLogger(__name__)
 
-DELIVERY_MODE = os.getenv("DELIVERY_MODE", "zapier").strip().lower()
+DELIVERY_MODE = os.getenv("DELIVERY_MODE", "manual").strip().lower()
 ZAPIER_WEBHOOK_URL = os.getenv("ZAPIER_WEBHOOK_URL", "").strip()
 DELIVERY_HTTP_TIMEOUT = float(os.getenv("DELIVERY_HTTP_TIMEOUT", "30"))
 DUE_DELIVERY_STATUSES = ("COMPLETED_PENDING_SEND", "READY_TO_SEND", "FAILED")
@@ -264,36 +264,52 @@ def send_delivery(self, delivery_id: str):
         logger.info("send_delivery_noop delivery_id=%s", delivery_id)
         return
 
-    target_url = _resolve_target_url(row)
-    if not target_url:
-        mark_delivery_failed(delivery_id, "missing target_url")
-        logger.warning("send_delivery_missing_target delivery_id=%s", delivery_id)
-        return
-
-    payload = _build_delivery_payload(row, target_url)
     mode = DELIVERY_MODE
 
     content = None
-    if mode == "zapier":
-        override_url = str(row.get("override_target_url") or "").strip()
-        if not override_url:
+    if mode in ("manual", "zapier", "automatic"):
+        # manual:
+        #   Always require a user-provided override_target_url via /ui/deliveries.
+        # zapier:
+        #   May prefill override_target_url (from an external system later); if missing, user can still enter it.
+        # automatic:
+        #   RESERVED for future; will eventually pull per-client delivery URL from a DB and auto-send.
+        #
+        # For now, manual/zapier/automatic all deliver via the Zapier webhook.
+        if mode == "manual":
+            resolved = str(row.get("override_target_url") or "").strip()
+        else:
+            # Prefer override_target_url if present, otherwise fall back to default_target_url.
+            resolved = _resolve_target_url(row)
+
+        if not resolved:
             mark_delivery_failed(delivery_id, "missing delivery_url")
-            logger.warning("send_delivery_missing_delivery_url delivery_id=%s", delivery_id)
+            logger.warning("send_delivery_missing_delivery_url delivery_id=%s mode=%s", delivery_id, mode)
             return
-        target_url = override_url
+
+        target_url = resolved
         payload = _build_delivery_payload(row, target_url)
+
         if not ZAPIER_WEBHOOK_URL:
             mark_delivery_failed(delivery_id, "missing ZAPIER_WEBHOOK_URL")
             logger.warning("send_delivery_missing_zapier_url delivery_id=%s", delivery_id)
             return
+
         content = load_payload_json(row.get("payload_s3_key") or "")
         if content is None:
             mark_delivery_failed(delivery_id, "missing payload content")
             logger.warning("send_delivery_missing_payload delivery_id=%s", delivery_id)
             return
+
         payload = _build_zapier_payload(row, target_url, content)
         url = ZAPIER_WEBHOOK_URL
     elif mode == "direct":
+        target_url = _resolve_target_url(row)
+        if not target_url:
+            mark_delivery_failed(delivery_id, "missing target_url")
+            logger.warning("send_delivery_missing_target delivery_id=%s", delivery_id)
+            return
+        payload = _build_delivery_payload(row, target_url)
         url = target_url
     else:
         mark_delivery_failed(delivery_id, f"invalid DELIVERY_MODE: {mode}")
