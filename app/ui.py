@@ -24,7 +24,7 @@ from .storage import (
     pause_job,
     resume_job,
 )
-from .tasks import run_resume_job, send_delivery
+from .tasks import purge_local_payload, run_resume_job, send_delivery
 from .s3_upload import head_object_info
 
 router = APIRouter(prefix="/ui", tags=["ui"])
@@ -297,6 +297,27 @@ def send_now(delivery_id: UUID, session: Session = Depends(get_db_session)):
     return SendNowResponse(ok=True, task_id=async_result.id)
 
 
+@router.post("/deliveries/{delivery_id}/delete")
+def delete_failed_delivery(delivery_id: UUID, session: Session = Depends(get_db_session)):
+    row = _get_delivery(session, delivery_id)
+    if (row.status or "").upper() != "FAILED":
+        raise HTTPException(status_code=400, detail="only FAILED deliveries can be deleted")
+
+    job_id = row.job_id
+    session.delete(row)
+    session.commit()
+
+    # Keep payloads around briefly for troubleshooting; purge a week after deletion.
+    purge_after_seconds = 7 * 24 * 60 * 60
+    purge_local_payload.apply_async(args=[job_id], countdown=purge_after_seconds)
+    logger.info(
+        "delivery_deleted delivery_id=%s job_id=%s purge_in_days=7",
+        str(delivery_id),
+        job_id,
+    )
+    return JSONResponse({"ok": True})
+
+
 @router.get("/deliveries", response_class=HTMLResponse)
 async def deliveries_page():
     html = """
@@ -410,6 +431,10 @@ async def deliveries_page():
             body.innerHTML = items.map(item => {
               const urlValue = item.override_target_url || "";
               const placeholder = item.default_target_url || "";
+              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
+              const deleteBtn = canDelete
+                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}')">Delete</button>`
+                : ``;
               return `
                 <tr>
                   <td>${item.client_name || ""}</td>
@@ -421,6 +446,7 @@ async def deliveries_page():
                   </td>
                   <td class="text-nowrap">
                     <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}')">Send</button>
+                    ${deleteBtn}
                   </td>
                 </tr>
               `;
@@ -449,6 +475,17 @@ async def deliveries_page():
             }
           }
 
+          async function deleteDelivery(id){
+            const ok = confirm("Delete this FAILED delivery? It will be removed from the list and its stored payload will be purged in 7 days.");
+            if (!ok) return;
+            try {
+              await apiJSON(`/ui/deliveries/${id}/delete`, { method: "POST" });
+              await loadDeliveries();
+            } catch (e) {
+              alert("Failed to delete. Check server logs.");
+            }
+          }
+
           refreshBtn.addEventListener("click", loadDeliveries);
           applyFilters.addEventListener("click", loadDeliveries);
 
@@ -470,6 +507,26 @@ async def queue_page():
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
         <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet" />
+        <style>
+          /* Icon-only action buttons in the queue table. */
+          .icon-action-btn {
+            border: 0 !important;
+            background: transparent !important;
+            color: var(--bs-secondary) !important;
+          }
+          .icon-action-btn:hover:not(:disabled) {
+            background: rgba(var(--bs-secondary-rgb), 0.12) !important;
+          }
+          .icon-action-btn:active:not(:disabled) {
+            background: rgba(var(--bs-secondary-rgb), 0.2) !important;
+          }
+          .icon-action-btn:focus-visible {
+            box-shadow: 0 0 0 .2rem rgba(var(--bs-primary-rgb), .25);
+          }
+          .icon-action-btn:disabled {
+            opacity: 0.35;
+          }
+        </style>
       </head>
       <body class="bg-light">
         <div class="container py-4">
@@ -754,7 +811,7 @@ async def queue_page():
             const handlerAttr = enabled ? `onclick="${onClick}"` : "";
             return `
               <button title="${title}" aria-label="${title}"
-                class="btn btn-sm ${enabled ? 'btn-outline-secondary' : 'btn-outline-secondary disabled'}"
+                class="btn btn-sm icon-action-btn ${enabled ? '' : 'disabled'}"
                 style="${iconBtnStyle(enabled)}" ${disabledAttr} ${handlerAttr}
                 data-bs-toggle="tooltip" data-bs-placement="top" data-bs-title="${title}">
                 <span style="${iconWrapStyle}">${ICONS[iconKey]}</span>
