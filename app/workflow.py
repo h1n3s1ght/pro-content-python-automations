@@ -254,7 +254,6 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             await log_e("outbox_skipped: missing_client_name")
         else:
             try:
-                default_target_url = build_default_target_url(client_name, job_details)
                 condensed_source = business_name or client_name
                 condensed = condense_name(condensed_source)
                 if not condensed:
@@ -265,6 +264,16 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                         preview_url = build_preview_url(condensed)
                     except Exception as e:
                         await log_w(f"preview_url_exception: {e}")
+
+                # For manual Zapier deliveries, we only *need* override_target_url.
+                # default_target_url is kept as a non-null placeholder for the UI/database.
+                delivery_mode = str(os.getenv("DELIVERY_MODE", "zapier") or "zapier").strip().lower()
+                if delivery_mode == "zapier":
+                    base_domain = str(os.getenv("PREVIEW_BASE_DOMAIN", "wp-premium-hosting.com") or "").strip()
+                    default_target_url = f"https://{condensed}.{base_domain}" if (condensed and base_domain) else ""
+                else:
+                    default_target_url = build_default_target_url(client_name, job_details)
+
                 initial_status = "COMPLETED_PENDING_SEND"
                 delivery_id = await asyncio.to_thread(
                     enqueue_delivery_outbox,
