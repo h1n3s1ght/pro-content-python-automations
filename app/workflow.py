@@ -136,6 +136,12 @@ async def _generate_campaign_pages_best_effort(
     for campaign_path, campaign_slug in campaign_pages_to_generate:
         await _ensure_can_continue(job_id)
         await prog({"campaign_current": campaign_path})
+        logger.info(
+            "job=%s campaign_page_start path=%s slug=%s",
+            job_id or "",
+            campaign_path,
+            campaign_slug,
+        )
         await log_i(f"campaign_page_start: path={campaign_path} slug={campaign_slug}")
 
         campaign_log_lines: List[str] = []
@@ -152,25 +158,31 @@ async def _generate_campaign_pages_best_effort(
             validated = CampaignPageItem.model_validate(campaign_item)
             results.append(validated.model_dump(by_alias=True))
             counters["done"] += 1
-            await log_i(f"campaign_page_done: path={campaign_path} slug={campaign_slug}")
+            logger.info(
+                "job=%s campaign_page_success path=%s slug=%s",
+                job_id or "",
+                campaign_path,
+                campaign_slug,
+            )
+            await log_i(f"campaign_page_success: path={campaign_path} slug={campaign_slug}")
         except (OperationCanceled, PauseRequested):
             raise
         except Exception as e:
             counters["failed"] += 1
             tb = traceback.format_exc().strip().replace("\n", " | ")
             logger.exception(
-                "job=%s campaign_page_failed path=%s slug=%s err=%s",
+                "job=%s campaign_page_failure path=%s slug=%s err=%s",
                 job_id or "",
                 campaign_path,
                 campaign_slug,
                 e,
             )
             await log_e(
-                f"campaign_page_failed: path={campaign_path} slug={campaign_slug} "
+                f"campaign_page_failure: path={campaign_path} slug={campaign_slug} "
                 f"error={type(e).__name__}: {e}"
             )
             await log_e(
-                f"campaign_page_traceback: path={campaign_path} slug={campaign_slug} trace={tb[:5000]}"
+                f"campaign_page_failure_traceback: path={campaign_path} slug={campaign_slug} trace={tb[:5000]}"
             )
         finally:
             if campaign_log_lines:

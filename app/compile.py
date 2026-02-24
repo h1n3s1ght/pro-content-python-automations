@@ -392,7 +392,7 @@ def compile_final(
     _validate_final_paths(final)
 
     # Enforce final strict schema
-    output = final.model_dump()
+    output = final.model_dump(by_alias=True)
     if isinstance(output.get("home"), dict):
         _drop_page_title_if_none(output["home"])
     if isinstance(output.get("about"), dict):

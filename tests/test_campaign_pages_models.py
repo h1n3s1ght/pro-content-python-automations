@@ -59,3 +59,27 @@ def test_final_output_includes_campaign_pages_default():
 
     compiled = compile_final([])
     assert compiled["data"]["content"]["campaign_pages"] == []
+
+
+def test_compile_final_accepts_campaign_pages_and_keeps_alias_key():
+    campaign_item = CampaignPageItem.model_validate(
+        {
+            "data": {
+                "content": {
+                    "slug": "discoverycall",
+                    "title": "Discovery Call",
+                    "subtitle": "Book now",
+                    "content": "<p>Main</p>",
+                    "desc_content": "<p>Desc</p>",
+                }
+            }
+        }
+    )
+
+    compiled = compile_final([], campaign_pages=[campaign_item])
+    out = compiled["data"]["content"]["campaign_pages"]
+
+    assert len(out) == 1
+    assert out[0]["data"]["content"]["slug"] == "discoverycall"
+    assert out[0]["data"]["content"]["desc-content"] == "<p>Desc</p>"
+    assert "desc_content" not in out[0]["data"]["content"]

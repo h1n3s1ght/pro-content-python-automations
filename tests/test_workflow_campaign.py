@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
@@ -8,7 +9,7 @@ os.environ.setdefault("PRO_SITEMAP_ASSISTANT_ID", "test-sitemap")
 from app import workflow
 
 
-def test_generate_campaign_pages_best_effort_continues_on_failure(monkeypatch):
+def test_generate_campaign_pages_best_effort_continues_on_failure(monkeypatch, caplog):
     async def _fake_generate_campaign_page_with_retries(**kwargs):
         slug = kwargs.get("campaign_slug")
         if slug == "discoverycall":
@@ -26,6 +27,7 @@ def test_generate_campaign_pages_best_effort_continues_on_failure(monkeypatch):
         }
 
     monkeypatch.setattr(workflow, "generate_campaign_page_with_retries", _fake_generate_campaign_page_with_retries)
+    caplog.set_level(logging.INFO, logger=workflow.__name__)
 
     logs = {"i": [], "d": [], "e": []}
     progress = []
@@ -59,11 +61,16 @@ def test_generate_campaign_pages_best_effort_continues_on_failure(monkeypatch):
     assert len(out) == 1
     assert out[0]["data"]["content"]["slug"] == "it-buyers-guide"
     assert any("campaign_page_start: path=/campaign/discoverycall slug=discoverycall" in msg for msg in logs["i"])
-    assert any("campaign_page_done: path=/campaign/it-buyers-guide slug=it-buyers-guide" in msg for msg in logs["i"])
-    assert any("campaign_page_failed: path=/campaign/discoverycall slug=discoverycall" in msg for msg in logs["e"])
-    assert any("campaign_page_traceback: path=/campaign/discoverycall slug=discoverycall" in msg for msg in logs["e"])
+    assert any("campaign_page_success: path=/campaign/it-buyers-guide slug=it-buyers-guide" in msg for msg in logs["i"])
+    assert any("campaign_page_failure: path=/campaign/discoverycall slug=discoverycall" in msg for msg in logs["e"])
+    assert any("campaign_page_failure_traceback: path=/campaign/discoverycall slug=discoverycall" in msg for msg in logs["e"])
     assert any("campaign_pages_summary: total=2 done=1 failed=1" in msg for msg in logs["i"])
     assert any(p.get("campaign_pages_failed") == 1 for p in progress)
+
+    logger_messages = [record.getMessage() for record in caplog.records if record.name == workflow.__name__]
+    assert any("campaign_page_start path=/campaign/discoverycall slug=discoverycall" in msg for msg in logger_messages)
+    assert any("campaign_page_success path=/campaign/it-buyers-guide slug=it-buyers-guide" in msg for msg in logger_messages)
+    assert any("campaign_page_failure path=/campaign/discoverycall slug=discoverycall" in msg for msg in logger_messages)
 
 
 def test_ensure_final_content_container_exists():
