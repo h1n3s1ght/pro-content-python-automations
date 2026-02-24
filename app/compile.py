@@ -1,9 +1,10 @@
 from __future__ import annotations
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .models import (
+    CampaignPageItem,
     FinalCopyOutput,
     HomePayload,
     AboutPayload,
@@ -333,10 +334,13 @@ def _validate_final_paths(final: FinalCopyOutput) -> None:
         raise ValueError(f"duplicate seo_page paths: {duplicates}")
 
 
-def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
+def compile_final(
+    page_envelopes: List[Dict[str, Any]],
+    campaign_pages: Optional[List[CampaignPageItem]] = None,
+) -> Dict[str, Any]:
     """
     Combines individual envelopes into the exact final structure:
-    { home, about, seo_pages, utility_pages }
+    { home, about, seo_pages, utility_pages, campaign_pages }
     Missing pages remain defaults.
     """
     final = FinalCopyOutput()
@@ -376,6 +380,10 @@ def compile_final(page_envelopes: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             # skip or unknown
             pass
+
+    if campaign_pages:
+        for item in campaign_pages:
+            final.campaign_pages.append(CampaignPageItem.model_validate(item))
 
     if not _clean_str(final.home.path):
         final.home.path = "/"
