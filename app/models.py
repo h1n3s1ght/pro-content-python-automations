@@ -301,12 +301,36 @@ class UtilityPageOutput(BaseModel):
     about_cta: CTA = Field(default_factory=CTA)
 
 
+class CampaignPageContent(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        populate_by_name=True,
+        serialize_by_alias=True,
+    )
+    slug: str = ""
+    title: str = ""
+    subtitle: str = ""
+    content: str = ""
+    desc_content: str = Field(default="", alias="desc-content")
+
+
+class CampaignPageData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: CampaignPageContent
+
+
+class CampaignPageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    data: CampaignPageData
+
+
 class FinalCopyOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     home: HomePayload = Field(default_factory=HomePayload)
     about: AboutPayload = Field(default_factory=AboutPayload)
     seo_pages: List[SEOPageItem] = Field(default_factory=list)
     utility_pages: List[UtilityPageOutput] = Field(default_factory=list)
+    campaign_pages: List[CampaignPageItem] = Field(default_factory=list)
 
 
 # -------------------------
