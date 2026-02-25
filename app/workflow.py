@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
 
 from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
+from .openai_campaign import generate_campaign_page_with_retries
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp
 from .copy_store import upsert_job_copy
@@ -17,6 +19,7 @@ from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_debug, log_warn, log_error
 from .storage import get_progress, set_progress, is_canceled, is_paused
 from .outbox import build_default_target_url, build_preview_url, condense_name, enqueue_delivery_outbox
+from .models import CampaignPageItem
 
 MAX_CONCURRENT_PAGES = int(os.getenv("MAX_CONCURRENT_PAGES", "4"))
 PAGE_TIMEOUT_SECONDS = int(os.getenv("PAGE_TIMEOUT_SECONDS", "240"))
@@ -26,6 +29,11 @@ NON_GENERATIVE_PATHS = {
     "/contact-us",
     "/contact-thank-you",
 }
+
+CAMPAIGN_PAGES: tuple[tuple[str, str], ...] = (
+    ("/campaign/discoverycall", "discoverycall"),
+    ("/campaign/it-buyers-guide", "it-buyers-guide"),
+)
 
 
 async def _ensure_can_continue(job_id: Optional[str]) -> None:
@@ -63,6 +71,136 @@ async def _merge_progress(job_id: str, patch: Dict[str, Any]) -> None:
     cur = await get_progress(job_id) or {}
     cur.update(patch)
     await set_progress(job_id, cur)
+
+
+def _ensure_final_content_container(final_copy: Dict[str, Any]) -> Dict[str, Any]:
+    data = final_copy.get("data")
+    if not isinstance(data, dict):
+        data = {}
+        final_copy["data"] = data
+
+    content = data.get("content")
+    if not isinstance(content, dict):
+        content = {}
+        data["content"] = content
+    return content
+
+
+def _questionnaire_campaign_pages(user_data: Dict[str, Any]) -> List[tuple[str, str]]:
+    """
+    Placeholder extension point for questionnaire-driven campaign pages.
+
+    TODO:
+    - Read/validate `user_data.additional_campaigns` once questionnaire schema is finalized.
+    - Map questionnaire entries into `(campaign_path, campaign_slug)` tuples.
+    - De-duplicate against the fixed CAMPAIGN_PAGES list.
+    """
+    if not isinstance(user_data, dict):
+        return []
+
+    # Safe read to avoid breaking current jobs when the field is missing.
+    additional_campaigns = user_data.get("additional_campaigns")
+    if additional_campaigns is None:
+        return []
+
+    # Intentionally disabled until schema/requirements are finalized.
+    return []
+
+
+async def _generate_campaign_pages_best_effort(
+    *,
+    metadata: Dict[str, Any],
+    user_data: Dict[str, Any],
+    job_details: Dict[str, Any],
+    sitemap_data: Dict[str, Any],
+    job_id: Optional[str],
+    log_i,
+    log_d,
+    log_e,
+    prog,
+) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    counters = {"done": 0, "failed": 0}
+    campaign_pages_to_generate = list(CAMPAIGN_PAGES)
+    campaign_pages_to_generate.extend(_questionnaire_campaign_pages(user_data))
+    total = len(campaign_pages_to_generate)
+    await prog(
+        {
+            "campaign_pages_total": total,
+            "campaign_pages_done": 0,
+            "campaign_pages_failed": 0,
+            "campaign_current": "",
+        }
+    )
+
+    for campaign_path, campaign_slug in campaign_pages_to_generate:
+        await _ensure_can_continue(job_id)
+        await prog({"campaign_current": campaign_path})
+        logger.info(
+            "job=%s campaign_page_start path=%s slug=%s",
+            job_id or "",
+            campaign_path,
+            campaign_slug,
+        )
+        await log_i(f"campaign_page_start: path={campaign_path} slug={campaign_slug}")
+
+        campaign_log_lines: List[str] = []
+        try:
+            campaign_item = await generate_campaign_page_with_retries(
+                metadata=metadata,
+                user_data=user_data,
+                job_details=job_details,
+                sitemap_data=sitemap_data,
+                campaign_path=campaign_path,
+                campaign_slug=campaign_slug,
+                log_lines=campaign_log_lines,
+            )
+            validated = CampaignPageItem.model_validate(campaign_item)
+            results.append(validated.model_dump(by_alias=True))
+            counters["done"] += 1
+            logger.info(
+                "job=%s campaign_page_success path=%s slug=%s",
+                job_id or "",
+                campaign_path,
+                campaign_slug,
+            )
+            await log_i(f"campaign_page_success: path={campaign_path} slug={campaign_slug}")
+        except (OperationCanceled, PauseRequested):
+            raise
+        except Exception as e:
+            counters["failed"] += 1
+            tb = traceback.format_exc().strip().replace("\n", " | ")
+            logger.exception(
+                "job=%s campaign_page_failure path=%s slug=%s err=%s",
+                job_id or "",
+                campaign_path,
+                campaign_slug,
+                e,
+            )
+            await log_e(
+                f"campaign_page_failure: path={campaign_path} slug={campaign_slug} "
+                f"error={type(e).__name__}: {e}"
+            )
+            await log_e(
+                f"campaign_page_failure_traceback: path={campaign_path} slug={campaign_slug} trace={tb[:5000]}"
+            )
+        finally:
+            if campaign_log_lines:
+                for line in campaign_log_lines:
+                    await log_d(line)
+            await prog(
+                {
+                    "campaign_pages_done": counters["done"],
+                    "campaign_pages_failed": counters["failed"],
+                }
+            )
+
+    await prog({"campaign_current": ""})
+    await log_i(
+        "campaign_pages_summary: "
+        f"total={total} done={counters['done']} failed={counters['failed']}"
+    )
+    return results
 
 
 async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = None) -> Dict[str, Any]:
@@ -251,7 +389,18 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     await _ensure_can_continue(job_id)
     await prog({"stage": "compile"})
-    final_copy = compile_final(envelopes)
+    campaign_pages_results = await _generate_campaign_pages_best_effort(
+        metadata=metadata,
+        user_data=user_data,
+        job_details=job_details,
+        sitemap_data=sitemap_data or {},
+        job_id=job_id,
+        log_i=log_i,
+        log_d=log_d,
+        log_e=log_e,
+        prog=prog,
+    )
+    final_copy = compile_final(envelopes, campaign_pages=campaign_pages_results)
 
     payload_ref = ""
     db_copy_id = None
