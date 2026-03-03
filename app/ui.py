@@ -594,6 +594,199 @@ async def deliveries_page():
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
         <style>
+          :root{
+            --bg-page-1:#bfeee7;
+            --bg-page-2:#72c6bb;
+
+            --card-bg:#ffffff;
+            --text-900:#0f172a;
+            --text-700:#334155;
+            --text-500:#64748b;
+
+            --line: rgba(15, 23, 42, 0.10);
+            --line-soft: rgba(15, 23, 42, 0.06);
+
+            --accent-600:#2aa89a;
+            --accent-500:#41b9ac;
+            --accent-100: rgba(42,168,154,0.12);
+            --accent-050: rgba(42,168,154,0.06);
+
+            --tier-pro-bg: rgba(42,168,154,0.16);
+            --tier-pro-pill: rgba(42,168,154,0.22);
+            --tier-pro-text: #0f766e;
+
+            --tier-express-bg: rgba(245,158,11,0.14);
+            --tier-express-pill: rgba(245,158,11,0.22);
+            --tier-express-text: #92400e;
+
+            --tier-default-bg: rgba(100,116,139,0.08);
+            --tier-default-pill: rgba(100,116,139,0.12);
+            --tier-default-text: #334155;
+
+            --radius: 12px;
+            --shadow: 0 10px 30px rgba(15,23,42,0.10);
+
+            --cell-px: 14px;
+            --cell-py: 12px;
+            --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+          }
+          body{
+            font-family: var(--font);
+            color: var(--text-700);
+            background: linear-gradient(to bottom, var(--bg-page-1), var(--bg-page-2));
+            min-height: 100vh;
+          }
+          .page-wrap{
+            padding: 28px;
+          }
+          .deliveries-card{
+            background: var(--card-bg);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 18px;
+          }
+          :focus-visible{
+            outline: 3px solid var(--accent-100);
+            outline-offset: 2px;
+          }
+          .toolbar{
+            background: var(--accent-050);
+            border: 1px solid var(--line-soft);
+            border-radius: 10px;
+            padding: 12px;
+            display:flex;
+            gap:10px;
+            flex-wrap:wrap;
+            align-items:center;
+          }
+          .toolbar .form-control,
+          .toolbar .form-select{
+            height: 40px;
+            border-color: var(--line);
+            border-radius: 10px;
+          }
+          .toolbar .form-control:focus,
+          .toolbar .form-select:focus{
+            border-color: var(--accent-500);
+            box-shadow: 0 0 0 4px var(--accent-100);
+          }
+          .btn-accent{
+            background: var(--accent-600);
+            border-color: var(--accent-600);
+            color:#fff;
+            border-radius: 10px;
+            font-weight:600;
+          }
+          .btn-accent:hover{
+            filter: brightness(0.95);
+            color:#fff;
+          }
+          .table-shell{
+            border: 1px solid var(--line-soft);
+            border-radius: 12px;
+            overflow: hidden;
+          }
+          .table-modern{
+            margin:0;
+            border-collapse: separate;
+            border-spacing: 0;
+            width:100%;
+          }
+          .table-modern thead th{
+            background: rgba(42,168,154,0.18);
+            color: var(--text-700);
+            font-size: 12px;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            font-weight: 600;
+            padding: 12px var(--cell-px);
+            border-bottom: 1px solid var(--line);
+            position: sticky;
+            top: 0;
+            z-index: 2;
+          }
+          .table-modern thead th:first-child,
+          .table-modern tbody td:first-child{
+            position: sticky;
+            left: 0;
+            z-index: 3;
+            background: inherit;
+          }
+          .table-modern thead th:first-child{
+            z-index: 4;
+            background: rgba(42,168,154,0.18);
+          }
+          .table-modern tbody td{
+            padding: var(--cell-py) var(--cell-px);
+            border-bottom: 1px solid var(--line-soft);
+            vertical-align: middle;
+            color: var(--text-700);
+          }
+          .table-modern tbody tr:nth-child(even){
+            background: var(--accent-050);
+          }
+          .table-modern tbody tr:hover{
+            background: rgba(42,168,154,0.10);
+          }
+          .tier-cell{
+            border-left: 1px solid rgba(15,23,42,0.06);
+            border-right: 1px solid rgba(15,23,42,0.06);
+          }
+          .tier-cell.is-pro{ background: var(--tier-pro-bg); }
+          .tier-cell.is-express{ background: var(--tier-express-bg); }
+          .tier-cell.is-default{ background: var(--tier-default-bg); }
+          .tier-pill{
+            display:inline-flex;
+            align-items:center;
+            height: 28px;
+            padding: 0 10px;
+            border-radius: 999px;
+            font-weight: 700;
+            font-size: 12px;
+            letter-spacing: .02em;
+          }
+          .tier-pill.is-pro{
+            background: var(--tier-pro-pill);
+            color: var(--tier-pro-text);
+          }
+          .tier-pill.is-express{
+            background: var(--tier-express-pill);
+            color: var(--tier-express-text);
+          }
+          .tier-pill.is-default{
+            background: var(--tier-default-pill);
+            color: var(--tier-default-text);
+          }
+          .url-input{
+            height: 36px;
+            border-radius: 10px;
+            border-color: var(--line);
+            color: var(--text-700);
+          }
+          .btn-pill{
+            height: 36px;
+            border-radius: 10px;
+            padding: 0 12px;
+            font-weight: 600;
+          }
+          .btn-send{
+            background: var(--accent-600);
+            border-color: var(--accent-600);
+            color:#fff;
+          }
+          .btn-send:hover{
+            filter: brightness(0.95);
+            color:#fff;
+          }
+          .btn-remove{
+            background: #ef4444;
+            border-color: #ef4444;
+            color:#fff;
+          }
+          .btn-remove:hover{
+            filter: brightness(0.95);
+            color:#fff;
+          }
           .admin-action {
             display: none !important;
           }
@@ -627,30 +820,48 @@ async def deliveries_page():
             cursor: pointer;
           }
           .sort-indicator {
+            font-size: 0.75rem;
+            color: var(--text-500);
+            margin-left: 0.2rem;
+          }
+          .days-input-wrap {
+            position: relative;
+          }
+          .days-input-wrap input[type="number"] {
+            padding-right: 4.25rem;
+          }
+          .days-input-wrap .days-suffix {
+            position: absolute;
+            top: 50%;
+            right: 1.8rem;
+            transform: translateY(-50%);
             font-size: 0.85rem;
             color: var(--bs-secondary-color);
-            margin-left: 0.2rem;
+            pointer-events: none;
+            user-select: none;
           }
         </style>
       </head>
-      <body class="bg-light">
-        <div class="container py-4">
+      <body>
+        <div class="page-wrap">
+          <div class="deliveries-card">
+            <div class="container py-0">
           <div class="d-flex flex-wrap align-items-center justify-content-between mb-3">
             <div>
               <h2 class="mb-0">Deliveries</h2>
               <div class="text-muted small">/ui/deliveries</div>
             </div>
             <div class="d-flex align-items-center gap-2">
-              <a href="/ui/queue" class="btn btn-outline-primary btn-sm">Job Queue</a>
+              <a href="/ui/queue" class="btn btn-outline-secondary btn-sm">Job Queue</a>
               <button id="refreshBtn" class="btn btn-outline-secondary btn-sm">Refresh</button>
               <div class="text-muted small" id="lastUpdated"></div>
             </div>
           </div>
 
-	          <div class="row g-2 mb-3">
-	            <div class="col-sm-4">
-	              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
-	            </div>
+		          <div class="row g-2 mb-3 toolbar">
+		            <div class="col-sm-4">
+		              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
+		            </div>
 	            <div class="col-sm-2">
 	              <select id="statusFilter" class="form-select form-select-sm">
 	                <option value="">All statuses</option>
@@ -671,7 +882,10 @@ async def deliveries_page():
 	              </select>
 	            </div>
 	            <div class="col-sm-2">
-	              <input id="daysBackFilter" type="number" min="1" step="1" class="form-control form-control-sm" placeholder="Days back" />
+	              <div class="days-input-wrap">
+	                <input id="daysBackFilter" type="number" min="1" step="1" class="form-control form-control-sm" placeholder="Days back" />
+	                <span class="days-suffix">days</span>
+	              </div>
 	            </div>
 	            <div class="col-sm-2">
 	              <input id="createdFromFilter" type="datetime-local" class="form-control form-control-sm" />
@@ -679,16 +893,17 @@ async def deliveries_page():
 	            <div class="col-sm-2">
 	              <input id="createdToFilter" type="datetime-local" class="form-control form-control-sm" />
 	            </div>
-	            <div class="col-sm-2">
-	              <button id="applyFilters" class="btn btn-sm btn-primary w-100">Apply</button>
-	            </div>
-	          </div>
+		            <div class="col-sm-2">
+		              <button id="applyFilters" class="btn btn-accent w-100">Apply</button>
+		            </div>
+		          </div>
 	          <div id="flashMessage"></div>
 
-	          <div class="table-responsive">
-	            <table class="table table-sm align-middle table-hover bg-white shadow-sm">
-              <thead class="table-light">
-                <tr>
+		          <div class="table-shell">
+		            <div class="table-responsive">
+		              <table class="table table-modern table-sm align-middle table-hover bg-white shadow-sm">
+	              <thead class="table-light">
+	                <tr>
 	                  <th scope="col">
 	                    <button type="button" class="sort-trigger" data-sort-key="client_name">Client<span class="sort-indicator" id="sort-indicator-client_name">↕</span></button>
 	                  </th>
@@ -704,12 +919,15 @@ async def deliveries_page():
                   <th scope="col" class="admin-action">Actions</th>
                 </tr>
               </thead>
-              <tbody id="deliveriesBody">
-                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
-	              </tbody>
-	            </table>
-	          </div>
-	        </div>
+	              <tbody id="deliveriesBody">
+	                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
+			              </tbody>
+			              </table>
+			            </div>
+			          </div>
+		        </div>
+		      </div>
+		    </div>
 	        <div class="modal fade" id="removeDeliveryModal" tabindex="-1" aria-labelledby="removeDeliveryModalTitle" aria-hidden="true">
 	          <div class="modal-dialog modal-dialog-centered">
 	            <div class="modal-content">
@@ -910,9 +1128,9 @@ async def deliveries_page():
 	            }
 	          }
 
-	          function renderFlashFromQuery(){
-	            const params = new URLSearchParams(window.location.search);
-	            const success = (params.get("flash_success") || "").trim();
+		          function renderFlashFromQuery(){
+		            const params = new URLSearchParams(window.location.search);
+		            const success = (params.get("flash_success") || "").trim();
 	            const error = (params.get("flash_error") || "").trim();
 	            if (!success && !error) return;
 	            const message = error || success;
@@ -926,14 +1144,40 @@ async def deliveries_page():
 	            params.delete("flash_success");
 	            params.delete("flash_error");
 	            const nextQuery = params.toString();
-	            const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname;
-	            window.history.replaceState({}, "", nextUrl);
-	          }
+		            const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname;
+		            window.history.replaceState({}, "", nextUrl);
+		          }
 
-	          function renderRows(items){
-	            if (!items.length){
-	              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
-	              return;
+		          function applyTierStyling(){
+		            const table = document.querySelector(".table-modern");
+		            if(!table) return;
+
+		            const headers = Array.from(table.querySelectorAll("thead th"));
+		            const tierIndex = headers.findIndex(th =>
+		              th.textContent.trim().toLowerCase().includes("website tier")
+		            );
+		            if(tierIndex === -1) return;
+
+		            table.querySelectorAll("tbody tr").forEach(row => {
+		              const cell = row.children[tierIndex];
+		              if(!cell) return;
+
+		              const value = cell.textContent.trim();
+		              cell.classList.add("tier-cell");
+
+		              let type = "default";
+		              if(value.toLowerCase() === "pro") type = "pro";
+		              if(value.toLowerCase() === "express") type = "express";
+
+		              cell.classList.add("is-" + type);
+		              cell.innerHTML = `<span class="tier-pill is-${type}">${escapeHtml(value)}</span>`;
+		            });
+		          }
+
+		          function renderRows(items){
+		            if (!items.length){
+		              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
+		              return;
 	            }
 	            body.innerHTML = items.map(item => {
 	              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
@@ -945,7 +1189,7 @@ async def deliveries_page():
 	              const deleteBtn = canDelete
 	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
 	                : ``;
-	              const removeBtn = `<button class="btn btn-sm btn-danger ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
+	              const removeBtn = `<button class="btn btn-pill btn-remove ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
 	              return `
 	                <tr>
 	                  <td>${item.client_name || ""}</td>
@@ -953,18 +1197,19 @@ async def deliveries_page():
 	                  <td>${item.website_tier || "Pro"}</td>
 	                  <td>${item.status || ""}</td>
 	                  <td class="text-muted small">${formatDate(item.created_at)}</td>
-	                  <td class="admin-action">
-	                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
-	                  </td>
-	                  <td class="text-nowrap admin-action">
-	                    <button class="btn btn-sm btn-primary admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
-	                    ${deleteBtn}
-	                    ${removeBtn}
-	                  </td>
-	                </tr>
-	              `;
-	            }).join("");
-	          }
+		                  <td class="admin-action">
+		                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm url-input" placeholder="${placeholder}" value="${urlValue}" />
+		                  </td>
+		                  <td class="text-nowrap admin-action">
+		                    <button class="btn btn-pill btn-send admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
+		                    ${deleteBtn}
+		                    ${removeBtn}
+		                  </td>
+		                </tr>
+		              `;
+		            }).join("");
+		            applyTierStyling();
+		          }
 
 	          async function apiJSON(url, opts={}){
 	            const res = await fetch(url, opts);
