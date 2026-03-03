@@ -2,6 +2,7 @@ import time
 import json
 import os
 import logging
+from datetime import datetime
 from uuid import UUID
 from urllib.parse import urlencode, urlparse
 
@@ -357,14 +358,20 @@ def _deliveries_redirect(
 def list_deliveries(
     status: str | None = Query(default=None),
     client: str | None = Query(default=None),
+    tier: str | None = Query(default=None),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     session: Session = Depends(get_db_session),
 ):
     logger.info(
-        "ui_list_deliveries_start status=%s client=%s page=%s page_size=%s db=%s",
+        "ui_list_deliveries_start status=%s client=%s tier=%s created_from=%s created_to=%s page=%s page_size=%s db=%s",
         status,
         client,
+        tier,
+        created_from.isoformat() if created_from else None,
+        created_to.isoformat() if created_to else None,
         page,
         page_size,
         _safe_db_location(),
@@ -396,6 +403,16 @@ def list_deliveries(
     if client:
         where_clauses.append("client_name ILIKE :client")
         params["client"] = f"%{client}%"
+    tier_name = (tier or "").strip().lower()
+    if tier_name in ("pro", "express"):
+        where_clauses.append("website_tier = :website_tier")
+        params["website_tier"] = "Express" if tier_name == "express" else "Pro"
+    if created_from:
+        where_clauses.append("created_at >= :created_from")
+        params["created_from"] = created_from
+    if created_to:
+        where_clauses.append("created_at <= :created_to")
+        params["created_to"] = created_to
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
     count_stmt = text(f"SELECT COUNT(*) FROM ({union_sql}) AS deliveries {where_sql}")
@@ -600,6 +617,20 @@ async def deliveries_page():
             margin: 0;
             padding: 0.5rem;
           }
+          .sort-trigger {
+            border: 0;
+            background: transparent;
+            padding: 0;
+            font: inherit;
+            font-weight: 600;
+            color: inherit;
+            cursor: pointer;
+          }
+          .sort-indicator {
+            font-size: 0.85rem;
+            color: var(--bs-secondary-color);
+            margin-left: 0.2rem;
+          }
         </style>
       </head>
       <body class="bg-light">
@@ -617,21 +648,34 @@ async def deliveries_page():
           </div>
 
 	          <div class="row g-2 mb-3">
-	            <div class="col-sm-5">
+	            <div class="col-sm-4">
 	              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
 	            </div>
-            <div class="col-sm-3">
-              <select id="statusFilter" class="form-select form-select-sm">
-                <option value="">All statuses</option>
-                <option>WAITING_FOR_SITE</option>
-                <option>CHECKING_SITE</option>
-                <option>READY_TO_SEND</option>
-                <option>COMPLETED_PENDING_SEND</option>
-                <option>FAILED</option>
-                <option>SENDING</option>
-                <option>SENT</option>
-              </select>
-            </div>
+	            <div class="col-sm-2">
+	              <select id="statusFilter" class="form-select form-select-sm">
+	                <option value="">All statuses</option>
+	                <option>WAITING_FOR_SITE</option>
+	                <option>CHECKING_SITE</option>
+	                <option>READY_TO_SEND</option>
+	                <option>COMPLETED_PENDING_SEND</option>
+	                <option>FAILED</option>
+	                <option>SENDING</option>
+	                <option>SENT</option>
+	              </select>
+	            </div>
+	            <div class="col-sm-2">
+	              <select id="tierFilter" class="form-select form-select-sm">
+	                <option value="">All tiers</option>
+	                <option value="pro">Pro</option>
+	                <option value="express">Express</option>
+	              </select>
+	            </div>
+	            <div class="col-sm-2">
+	              <input id="createdFromFilter" type="datetime-local" class="form-control form-control-sm" />
+	            </div>
+	            <div class="col-sm-2">
+	              <input id="createdToFilter" type="datetime-local" class="form-control form-control-sm" />
+	            </div>
 	            <div class="col-sm-2">
 	              <button id="applyFilters" class="btn btn-sm btn-primary w-100">Apply</button>
 	            </div>
@@ -642,12 +686,18 @@ async def deliveries_page():
 	            <table class="table table-sm align-middle table-hover bg-white shadow-sm">
               <thead class="table-light">
                 <tr>
-                  <th scope="col">Client</th>
-                  <th scope="col">Job ID</th>
-                  <th scope="col">Website Tier</th>
-                  <th scope="col">Status</th>
+	                  <th scope="col">
+	                    <button type="button" class="sort-trigger" data-sort-key="client_name">Client<span class="sort-indicator" id="sort-indicator-client_name">↕</span></button>
+	                  </th>
+	                  <th scope="col">Job ID</th>
+	                  <th scope="col">
+	                    <button type="button" class="sort-trigger" data-sort-key="website_tier">Website Tier<span class="sort-indicator" id="sort-indicator-website_tier">↕</span></button>
+	                  </th>
+	                  <th scope="col">
+	                    <button type="button" class="sort-trigger" data-sort-key="status">Status<span class="sort-indicator" id="sort-indicator-status">↕</span></button>
+	                  </th>
                   <th scope="col">Created</th>
-                  <th scope="col">Delivery URL</th>
+	                  <th scope="col" class="admin-action">Delivery URL</th>
                   <th scope="col" class="admin-action">Actions</th>
                 </tr>
               </thead>
@@ -693,25 +743,35 @@ async def deliveries_page():
 	          const lastUpdated = document.getElementById("lastUpdated");
 	          const clientFilter = document.getElementById("clientFilter");
 	          const statusFilter = document.getElementById("statusFilter");
+	          const tierFilter = document.getElementById("tierFilter");
+	          const createdFromFilter = document.getElementById("createdFromFilter");
+	          const createdToFilter = document.getElementById("createdToFilter");
 	          const applyFilters = document.getElementById("applyFilters");
+	          const sortButtons = Array.from(document.querySelectorAll(".sort-trigger[data-sort-key]"));
 	          const flashMessage = document.getElementById("flashMessage");
 	          const removeModalEl = document.getElementById("removeDeliveryModal");
 	          const removeForm = document.getElementById("removeDeliveryForm");
-		          const removeDeliveryId = document.getElementById("removeDeliveryId");
-		          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
-		          const removeDeliveryAdminActions = document.getElementById("removeDeliveryAdminActions");
-		          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
-		          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
-		          const removeConfirmName = document.getElementById("removeConfirmName");
-		          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
-		          const removeConfirmError = document.getElementById("removeConfirmError");
-		          const removeModal = new bootstrap.Modal(removeModalEl);
-		          const adminParams = new URLSearchParams(window.location.search);
-		          const isAdminActions = adminParams.get("adminActions") === "true";
-		          if (isAdminActions) {
-		            document.body.classList.add("admin-actions-enabled");
-		          }
-		          removeDeliveryAdminActions.value = isAdminActions ? "true" : "false";
+	          const removeDeliveryId = document.getElementById("removeDeliveryId");
+	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
+	          const removeDeliveryAdminActions = document.getElementById("removeDeliveryAdminActions");
+	          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
+	          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
+	          const removeConfirmName = document.getElementById("removeConfirmName");
+	          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
+	          const removeConfirmError = document.getElementById("removeConfirmError");
+	          const removeModal = new bootstrap.Modal(removeModalEl);
+	          const adminParams = new URLSearchParams(window.location.search);
+	          const isAdminActions = adminParams.get("adminActions") === "true" || adminParams.get("adminAction") === "true";
+	          const FILTER_COOKIE = "ui_deliveries_filters_v1";
+	          const FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+	          let activeSortKey = null;
+	          let activeSortDir = "asc";
+	          let rawItems = [];
+
+	          if (isAdminActions) {
+	            document.body.classList.add("admin-actions-enabled");
+	          }
+	          removeDeliveryAdminActions.value = isAdminActions ? "true" : "false";
 
 	          function escapeHtml(value){
 	            return String(value || "")
@@ -722,6 +782,106 @@ async def deliveries_page():
 	              .replace(/'/g, "&#39;");
 	          }
 
+	          function formatDate(ts){
+	            if (!ts) return "";
+	            try {
+	              return new Date(ts).toLocaleString();
+	            } catch (_) {
+	              return "";
+	            }
+	          }
+
+	          function toDateTimeLocalValue(date){
+	            const d = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+	            return d.toISOString().slice(0, 16);
+	          }
+
+	          function parseDateTimeLocalToISO(value){
+	            if (!value) return "";
+	            const d = new Date(value);
+	            return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+	          }
+
+	          function defaultDateRange(){
+	            const now = new Date();
+	            const from = new Date(now.getTime() - (60 * 24 * 60 * 60 * 1000));
+	            return {
+	              created_from: toDateTimeLocalValue(from),
+	              created_to: toDateTimeLocalValue(now),
+	            };
+	          }
+
+	          function getCookieValue(name){
+	            const parts = document.cookie ? document.cookie.split("; ") : [];
+	            for (const part of parts){
+	              if (part.startsWith(`${name}=`)){
+	                return part.slice(name.length + 1);
+	              }
+	            }
+	            return "";
+	          }
+
+	          function readFilterPrefs(){
+	            const raw = getCookieValue(FILTER_COOKIE);
+	            if (!raw) return null;
+	            try {
+	              const parsed = JSON.parse(decodeURIComponent(raw));
+	              if (!parsed || typeof parsed !== "object") return null;
+	              return parsed;
+	            } catch (_) {
+	              return null;
+	            }
+	          }
+
+	          function writeFilterPrefs(){
+	            const payload = {
+	              client: (clientFilter.value || "").trim(),
+	              status: (statusFilter.value || "").trim(),
+	              tier: (tierFilter.value || "").trim(),
+	              created_from: (createdFromFilter.value || "").trim(),
+	              created_to: (createdToFilter.value || "").trim(),
+	            };
+	            document.cookie = `${FILTER_COOKIE}=${encodeURIComponent(JSON.stringify(payload))}; Max-Age=${FILTER_COOKIE_MAX_AGE}; Path=/; SameSite=Lax`;
+	          }
+
+	          function restoreFilterPrefs(){
+	            const saved = readFilterPrefs();
+	            const defaults = defaultDateRange();
+	            clientFilter.value = saved?.client || "";
+	            statusFilter.value = saved?.status || "";
+	            tierFilter.value = saved?.tier || "";
+	            createdFromFilter.value = saved?.created_from || defaults.created_from;
+	            createdToFilter.value = saved?.created_to || defaults.created_to;
+	          }
+
+	          function normalizeSortValue(item, key){
+	            return String(item?.[key] || "").toLocaleLowerCase();
+	          }
+
+	          function sortItems(items){
+	            if (!activeSortKey) return [...items];
+	            const direction = activeSortDir === "desc" ? -1 : 1;
+	            return [...items].sort((a, b) => {
+	              const aVal = normalizeSortValue(a, activeSortKey);
+	              const bVal = normalizeSortValue(b, activeSortKey);
+	              if (aVal === bVal) return 0;
+	              return aVal > bVal ? direction : -direction;
+	            });
+	          }
+
+	          function updateSortIndicators(){
+	            for (const btn of sortButtons){
+	              const key = btn.dataset.sortKey;
+	              const indicator = document.getElementById(`sort-indicator-${key}`);
+	              if (!indicator) continue;
+	              if (key !== activeSortKey){
+	                indicator.textContent = "↕";
+	              } else {
+	                indicator.textContent = activeSortDir === "asc" ? "↑" : "↓";
+	              }
+	            }
+	          }
+
 	          function renderFlashFromQuery(){
 	            const params = new URLSearchParams(window.location.search);
 	            const success = (params.get("flash_success") || "").trim();
@@ -730,10 +890,10 @@ async def deliveries_page():
 	            const message = error || success;
 	            const cls = error ? "alert-danger" : "alert-success";
 	            flashMessage.innerHTML = `
-		              <div class="alert ${cls} alert-dismissible fade show py-2 deliveries-flash-alert" role="alert">
-		                ${escapeHtml(message)}
-		                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-		              </div>
+	              <div class="alert ${cls} alert-dismissible fade show py-2 deliveries-flash-alert" role="alert">
+	                ${escapeHtml(message)}
+	                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+	              </div>
 	            `;
 	            params.delete("flash_success");
 	            params.delete("flash_error");
@@ -742,44 +902,11 @@ async def deliveries_page():
 	            window.history.replaceState({}, "", nextUrl);
 	          }
 
-	          function formatDate(ts){
-	            if (!ts) return "";
-            try {
-              const d = new Date(ts);
-              return d.toLocaleString();
-            } catch (_) {
-              return "";
-            }
-          }
-
-          async function apiJSON(url, opts={}){
-            const res = await fetch(url, opts);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return await res.json();
-          }
-
-          async function loadDeliveries(){
-            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
-            const params = new URLSearchParams();
-            const client = (clientFilter.value || "").trim();
-            const status = (statusFilter.value || "").trim();
-            if (client) params.set("client", client);
-            if (status) params.set("status", status);
-
-            let data;
-            try {
-              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
-            } catch (e) {
-              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
-              return;
-            }
-
-            const items = data.items || [];
-            if (!items.length){
-              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
-              return;
-            }
-
+	          function renderRows(items){
+	            if (!items.length){
+	              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
+	              return;
+	            }
 	            body.innerHTML = items.map(item => {
 	              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
 	              const rowKey = `${tier}-${item.id}`;
@@ -787,65 +914,98 @@ async def deliveries_page():
 	              const urlValue = item.override_target_url || "";
 	              const placeholder = item.default_target_url || "";
 	              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
-		              const deleteBtn = canDelete
-		                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
-		                : ``;
-		              const removeBtn = `<button class="btn btn-sm btn-danger ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
-		              return `
-		                <tr>
-		                  <td>${item.client_name || ""}</td>
-                  <td class="text-monospace small">${item.job_id || ""}</td>
-                  <td>${item.website_tier || "Pro"}</td>
-                  <td>${item.status || ""}</td>
-                  <td class="text-muted small">${formatDate(item.created_at)}</td>
-                  <td>
-                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
-                  </td>
-		                  <td class="text-nowrap admin-action">
-		                    <button class="btn btn-sm btn-primary admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
-		                    ${deleteBtn}
-		                    ${removeBtn}
-		                  </td>
+	              const deleteBtn = canDelete
+	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
+	                : ``;
+	              const removeBtn = `<button class="btn btn-sm btn-danger ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
+	              return `
+	                <tr>
+	                  <td>${item.client_name || ""}</td>
+	                  <td class="text-monospace small">${item.job_id || ""}</td>
+	                  <td>${item.website_tier || "Pro"}</td>
+	                  <td>${item.status || ""}</td>
+	                  <td class="text-muted small">${formatDate(item.created_at)}</td>
+	                  <td class="admin-action">
+	                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm admin-action" placeholder="${placeholder}" value="${urlValue}" />
+	                  </td>
+	                  <td class="text-nowrap admin-action">
+	                    <button class="btn btn-sm btn-primary admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
+	                    ${deleteBtn}
+	                    ${removeBtn}
+	                  </td>
 	                </tr>
 	              `;
-            }).join("");
+	            }).join("");
+	          }
 
-            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-          }
+	          async function apiJSON(url, opts={}){
+	            const res = await fetch(url, opts);
+	            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	            return await res.json();
+	          }
 
-          async function sendNow(id, tier){
-            const rowKey = `${tier}-${id}`;
-            const input = document.getElementById(`delivery-url-${rowKey}`);
-            const url = (input ? input.value : "").trim();
-            if (!url){
-              alert("Please enter a Delivery URL first.");
-              return;
-            }
-            const qs = `?tier=${encodeURIComponent(tier)}`;
-            try {
-              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({override_target_url: url})
-              });
-              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
-              await loadDeliveries();
-            } catch (e) {
-              alert("Failed to send. Check server logs.");
-            }
-          }
+	          async function loadDeliveries(){
+	            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
+	            const params = new URLSearchParams();
+	            const client = (clientFilter.value || "").trim();
+	            const status = (statusFilter.value || "").trim();
+	            const tier = (tierFilter.value || "").trim();
+	            const createdFromISO = parseDateTimeLocalToISO(createdFromFilter.value);
+	            const createdToISO = parseDateTimeLocalToISO(createdToFilter.value);
+	            if (client) params.set("client", client);
+	            if (status) params.set("status", status);
+	            if (tier) params.set("tier", tier);
+	            if (createdFromISO) params.set("created_from", createdFromISO);
+	            if (createdToISO) params.set("created_to", createdToISO);
+	            writeFilterPrefs();
 
-          async function deleteDelivery(id, tier){
-            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
-            if (!ok) return;
-            try {
-              const alsoDeleteCopy = confirm("Also delete the stored job copy payload? It will move to Recently Deleted for 48 hours, then be destroyed.");
-              const base = `tier=${encodeURIComponent(tier)}`;
-              const qs = alsoDeleteCopy ? `?${base}&delete_copy=1` : `?${base}`;
-              await apiJSON(`/ui/deliveries/${id}/delete${qs}`, { method: "POST" });
-              await loadDeliveries();
-            } catch (e) {
-              alert("Failed to delete. Check server logs.");
+	            let data;
+	            try {
+	              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
+	            } catch (_) {
+	              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
+	              return;
+	            }
+
+	            rawItems = data.items || [];
+	            updateSortIndicators();
+	            renderRows(sortItems(rawItems));
+	            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+	          }
+
+	          async function sendNow(id, tier){
+	            const rowKey = `${tier}-${id}`;
+	            const input = document.getElementById(`delivery-url-${rowKey}`);
+	            const url = (input ? input.value : "").trim();
+	            if (!url){
+	              alert("Please enter a Delivery URL first.");
+	              return;
+	            }
+	            const qs = `?tier=${encodeURIComponent(tier)}`;
+	            try {
+	              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
+	                method: "POST",
+	                headers: {"Content-Type": "application/json"},
+	                body: JSON.stringify({override_target_url: url}),
+	              });
+	              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
+	              await loadDeliveries();
+	            } catch (_) {
+	              alert("Failed to send. Check server logs.");
+	            }
+	          }
+
+	          async function deleteDelivery(id, tier){
+	            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
+	            if (!ok) return;
+	            try {
+	              const alsoDeleteCopy = confirm("Also delete the stored job copy payload? It will move to Recently Deleted for 48 hours, then be destroyed.");
+	              const base = `tier=${encodeURIComponent(tier)}`;
+	              const qs = alsoDeleteCopy ? `?${base}&delete_copy=1` : `?${base}`;
+	              await apiJSON(`/ui/deliveries/${id}/delete${qs}`, { method: "POST" });
+	              await loadDeliveries();
+	            } catch (_) {
+	              alert("Failed to delete. Check server logs.");
 	            }
 	          }
 
@@ -876,6 +1036,21 @@ async def deliveries_page():
 	            removeModal.show();
 	          }
 
+	          for (const btn of sortButtons){
+	            btn.addEventListener("click", () => {
+	              const key = btn.dataset.sortKey;
+	              if (!key) return;
+	              if (activeSortKey === key){
+	                activeSortDir = activeSortDir === "asc" ? "desc" : "asc";
+	              } else {
+	                activeSortKey = key;
+	                activeSortDir = "asc";
+	              }
+	              updateSortIndicators();
+	              renderRows(sortItems(rawItems));
+	            });
+	          }
+
 	          removeConfirmName.addEventListener("input", validateRemoveModalInput);
 	          removeForm.addEventListener("submit", (event) => {
 	            if (removeConfirmName.value !== removeExpectedClientName.value){
@@ -883,6 +1058,7 @@ async def deliveries_page():
 	              validateRemoveModalInput();
 	            }
 	          });
+
 	          window.sendNow = sendNow;
 	          window.deleteDelivery = deleteDelivery;
 	          window.openRemoveModal = openRemoveModal;
@@ -890,7 +1066,9 @@ async def deliveries_page():
 	          refreshBtn.addEventListener("click", loadDeliveries);
 	          applyFilters.addEventListener("click", loadDeliveries);
 
+	          restoreFilterPrefs();
 	          renderFlashFromQuery();
+	          updateSortIndicators();
 	          loadDeliveries();
 	        </script>
       </body>
