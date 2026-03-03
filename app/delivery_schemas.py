@@ -25,6 +25,7 @@ class DeliveryOutboxSchema(BaseModel):
     created_at: datetime
     updated_at: datetime
     sent_at: datetime | None = None
+    website_tier: str = "Pro"
 
 
 class DeliveryListResponse(BaseModel):

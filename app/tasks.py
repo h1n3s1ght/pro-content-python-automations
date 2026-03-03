@@ -13,11 +13,15 @@ from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_warn, log_error
 from .outbox import (
     claim_delivery,
+    claim_delivery_for_tier,
     claim_site_check,
+    mark_delivery_failed_for_tier,
+    mark_delivery_sent_for_tier,
     mark_delivery_failed,
     mark_delivery_sent,
     mark_site_check_failed,
     mark_site_ready,
+    normalize_delivery_tier,
 )
 from .db import get_sessionmaker
 from .db_models import DeliveryOutbox, RecentlyDeletedJobCopy
@@ -252,15 +256,30 @@ def _build_zapier_payload(row: dict, target_url: str, content: dict) -> dict:
     bind=True,
     autoretry_for=(),
 )
-def send_delivery(self, delivery_id: str):
+def send_delivery(self, delivery_id: str, tier: str = "pro"):
+    tier_name = normalize_delivery_tier(tier)
+    if tier_name == "express":
+        def claim_fn(did: str):
+            return claim_delivery_for_tier(did, tier=tier_name)
+
+        def mark_failed_fn(did: str, err: str):
+            return mark_delivery_failed_for_tier(did, err, tier=tier_name)
+
+        def mark_sent_fn(did: str):
+            return mark_delivery_sent_for_tier(did, tier=tier_name)
+    else:
+        claim_fn = claim_delivery
+        mark_failed_fn = mark_delivery_failed
+        mark_sent_fn = mark_delivery_sent
+
     try:
-        row = claim_delivery(delivery_id)
+        row = claim_fn(delivery_id)
     except Exception as exc:
-        logger.exception("send_delivery_claim_failed delivery_id=%s err=%s", delivery_id, exc)
+        logger.exception("send_delivery_claim_failed delivery_id=%s tier=%s err=%s", delivery_id, tier_name, exc)
         raise
 
     if not row:
-        logger.info("send_delivery_noop delivery_id=%s", delivery_id)
+        logger.info("send_delivery_noop delivery_id=%s tier=%s", delivery_id, tier_name)
         return
 
     mode = DELIVERY_MODE
@@ -282,22 +301,22 @@ def send_delivery(self, delivery_id: str):
             resolved = _resolve_target_url(row)
 
         if not resolved:
-            mark_delivery_failed(delivery_id, "missing delivery_url")
-            logger.warning("send_delivery_missing_delivery_url delivery_id=%s mode=%s", delivery_id, mode)
+            mark_failed_fn(delivery_id, "missing delivery_url")
+            logger.warning("send_delivery_missing_delivery_url delivery_id=%s tier=%s mode=%s", delivery_id, tier_name, mode)
             return
 
         target_url = resolved
         payload = _build_delivery_payload(row, target_url)
 
         if not ZAPIER_WEBHOOK_URL:
-            mark_delivery_failed(delivery_id, "missing ZAPIER_WEBHOOK_URL")
-            logger.warning("send_delivery_missing_zapier_url delivery_id=%s", delivery_id)
+            mark_failed_fn(delivery_id, "missing ZAPIER_WEBHOOK_URL")
+            logger.warning("send_delivery_missing_zapier_url delivery_id=%s tier=%s", delivery_id, tier_name)
             return
 
         content = load_payload_json(row.get("payload_s3_key") or "")
         if content is None:
-            mark_delivery_failed(delivery_id, "missing payload content")
-            logger.warning("send_delivery_missing_payload delivery_id=%s", delivery_id)
+            mark_failed_fn(delivery_id, "missing payload content")
+            logger.warning("send_delivery_missing_payload delivery_id=%s tier=%s", delivery_id, tier_name)
             return
 
         payload = _build_zapier_payload(row, target_url, content)
@@ -305,27 +324,27 @@ def send_delivery(self, delivery_id: str):
     elif mode == "direct":
         target_url = _resolve_target_url(row)
         if not target_url:
-            mark_delivery_failed(delivery_id, "missing target_url")
-            logger.warning("send_delivery_missing_target delivery_id=%s", delivery_id)
+            mark_failed_fn(delivery_id, "missing target_url")
+            logger.warning("send_delivery_missing_target delivery_id=%s tier=%s", delivery_id, tier_name)
             return
         payload = _build_delivery_payload(row, target_url)
         url = target_url
     else:
-        mark_delivery_failed(delivery_id, f"invalid DELIVERY_MODE: {mode}")
-        logger.warning("send_delivery_invalid_mode delivery_id=%s mode=%s", delivery_id, mode)
+        mark_failed_fn(delivery_id, f"invalid DELIVERY_MODE: {mode}")
+        logger.warning("send_delivery_invalid_mode delivery_id=%s tier=%s mode=%s", delivery_id, tier_name, mode)
         return
 
     try:
         with httpx.Client(timeout=DELIVERY_HTTP_TIMEOUT) as client:
             resp = client.post(url, json=payload)
     except Exception as exc:
-        mark_delivery_failed(delivery_id, f"request_error: {exc}")
-        logger.exception("send_delivery_request_error delivery_id=%s", delivery_id)
+        mark_failed_fn(delivery_id, f"request_error: {exc}")
+        logger.exception("send_delivery_request_error delivery_id=%s tier=%s", delivery_id, tier_name)
         return
 
     if 200 <= resp.status_code < 300:
-        mark_delivery_sent(delivery_id)
-        logger.info("send_delivery_sent delivery_id=%s status=%s", delivery_id, resp.status_code)
+        mark_sent_fn(delivery_id)
+        logger.info("send_delivery_sent delivery_id=%s tier=%s status=%s", delivery_id, tier_name, resp.status_code)
         try:
             job_id = str(row.get("job_id") or "").strip()
             client_name = str(row.get("client_name") or "").strip()
@@ -337,8 +356,8 @@ def send_delivery(self, delivery_id: str):
         return
 
     resp_body = (resp.text or "")[:800]
-    mark_delivery_failed(delivery_id, f"{resp.status_code}: {resp_body}")
-    logger.warning("send_delivery_failed delivery_id=%s status=%s", delivery_id, resp.status_code)
+    mark_failed_fn(delivery_id, f"{resp.status_code}: {resp_body}")
+    logger.warning("send_delivery_failed delivery_id=%s tier=%s status=%s", delivery_id, tier_name, resp.status_code)
 
 
 @celery_app.task(

@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import func, update
+from sqlalchemy import func, update, text
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import get_sessionmaker
@@ -18,6 +18,8 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _CONDENSE_RE = re.compile(r"[^a-z0-9]+")
 READY_STATUSES = ("READY", "READY_TO_SEND", "FAILED", "COMPLETED_PENDING_SEND")
 logger = logging.getLogger(__name__)
+PRO_OUTBOX_TABLE = "delivery_outbox"
+EXPRESS_OUTBOX_TABLE = "express_delivery_outbox"
 
 
 def _clean_str(value: Any) -> str:
@@ -283,6 +285,35 @@ def _normalize_uuid(value: Any) -> uuid.UUID:
     return uuid.UUID(str(value))
 
 
+def normalize_delivery_tier(tier: str | None) -> str:
+    value = _clean_str(tier).lower()
+    return "express" if value == "express" else "pro"
+
+
+def delivery_outbox_table_name_for_tier(tier: str | None = None) -> str:
+    return EXPRESS_OUTBOX_TABLE if normalize_delivery_tier(tier) == "express" else PRO_OUTBOX_TABLE
+
+
+def _table_columns(session, table_name: str) -> set[str]:
+    stmt = text(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = :table_name
+        """
+    )
+    return {str(row[0]) for row in session.execute(stmt, {"table_name": table_name}).all()}
+
+
+def _returning_expr(column: str, available: set[str], *, fallback_sql: str) -> str:
+    if column in available:
+        if column in ("attempt_count", "site_check_attempts"):
+            return f"COALESCE({column}, 0) AS {column}"
+        return f"{column} AS {column}"
+    return f"{fallback_sql} AS {column}"
+
+
 def claim_delivery(delivery_id: Any) -> Optional[Dict[str, Any]]:
     delivery_uuid = _normalize_uuid(delivery_id)
     session_factory = get_sessionmaker()
@@ -363,6 +394,129 @@ def mark_delivery_failed(delivery_id: Any, error_message: Any) -> bool:
             )
         )
         result = session.execute(stmt)
+        session.commit()
+        return result.rowcount > 0
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def claim_delivery_for_tier(delivery_id: Any, *, tier: str | None = None) -> Optional[Dict[str, Any]]:
+    table_name = delivery_outbox_table_name_for_tier(tier)
+    delivery_uuid = _normalize_uuid(delivery_id)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        columns = _table_columns(session, table_name)
+        if not columns or "id" not in columns or "status" not in columns:
+            return None
+
+        set_clauses = ["status = 'SENDING'"]
+        if "attempt_count" in columns:
+            set_clauses.append("attempt_count = COALESCE(attempt_count, 0) + 1")
+        if "last_error" in columns:
+            set_clauses.append("last_error = NULL")
+        if "updated_at" in columns:
+            set_clauses.append("updated_at = NOW()")
+
+        statuses = ", ".join(f"'{st}'" for st in READY_STATUSES)
+        returning = [
+            _returning_expr("id", columns, fallback_sql="'00000000-0000-0000-0000-000000000000'::uuid"),
+            _returning_expr("job_id", columns, fallback_sql="''"),
+            _returning_expr("client_name", columns, fallback_sql="''"),
+            _returning_expr("payload_s3_key", columns, fallback_sql="''"),
+            _returning_expr("default_target_url", columns, fallback_sql="''"),
+            _returning_expr("override_target_url", columns, fallback_sql="NULL"),
+            _returning_expr("preview_url", columns, fallback_sql="NULL"),
+            _returning_expr("status", columns, fallback_sql="'SENDING'"),
+            _returning_expr("attempt_count", columns, fallback_sql="0"),
+        ]
+
+        stmt = text(
+            f"""
+            UPDATE {table_name}
+            SET {", ".join(set_clauses)}
+            WHERE id = :delivery_id
+              AND status IN ({statuses})
+            RETURNING {", ".join(returning)}
+            """
+        )
+        row = session.execute(stmt, {"delivery_id": delivery_uuid}).mappings().first()
+        session.commit()
+        return dict(row) if row else None
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def mark_delivery_sent_for_tier(delivery_id: Any, *, tier: str | None = None) -> bool:
+    table_name = delivery_outbox_table_name_for_tier(tier)
+    delivery_uuid = _normalize_uuid(delivery_id)
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        columns = _table_columns(session, table_name)
+        if not columns or "id" not in columns or "status" not in columns:
+            return False
+
+        set_clauses = ["status = 'SENT'"]
+        if "sent_at" in columns:
+            set_clauses.append("sent_at = NOW()")
+        if "last_error" in columns:
+            set_clauses.append("last_error = NULL")
+        if "updated_at" in columns:
+            set_clauses.append("updated_at = NOW()")
+
+        stmt = text(
+            f"""
+            UPDATE {table_name}
+            SET {", ".join(set_clauses)}
+            WHERE id = :delivery_id
+              AND status = 'SENDING'
+            """
+        )
+        result = session.execute(stmt, {"delivery_id": delivery_uuid})
+        session.commit()
+        return result.rowcount > 0
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def mark_delivery_failed_for_tier(delivery_id: Any, error_message: Any, *, tier: str | None = None) -> bool:
+    table_name = delivery_outbox_table_name_for_tier(tier)
+    delivery_uuid = _normalize_uuid(delivery_id)
+    err = _clean_str(error_message)[:2000]
+    session_factory = get_sessionmaker()
+    session = session_factory()
+    try:
+        columns = _table_columns(session, table_name)
+        if not columns or "id" not in columns or "status" not in columns:
+            return False
+
+        set_clauses = ["status = 'FAILED'"]
+        params = {"delivery_id": delivery_uuid}
+        if "last_error" in columns:
+            set_clauses.append("last_error = :error_message")
+            params["error_message"] = err
+        if "updated_at" in columns:
+            set_clauses.append("updated_at = NOW()")
+
+        stmt = text(
+            f"""
+            UPDATE {table_name}
+            SET {", ".join(set_clauses)}
+            WHERE id = :delivery_id
+              AND status = 'SENDING'
+            """
+        )
+        result = session.execute(stmt, params)
         session.commit()
         return result.rowcount > 0
     except Exception:

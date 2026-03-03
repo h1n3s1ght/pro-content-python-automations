@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi import Query
-from sqlalchemy import func, select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .db import get_db_session
@@ -25,6 +25,7 @@ from .storage import (
     resume_job,
 )
 from .copy_store import SOFT_DELETE_HOURS_DEFAULT, soft_delete_job_copy
+from .outbox import delivery_outbox_table_name_for_tier, normalize_delivery_tier
 from .tasks import finalize_deleted_job_copy, purge_local_payload, run_resume_job, send_delivery
 from .s3_upload import head_object_info
 
@@ -223,11 +224,113 @@ async def resume_job_endpoint(job_id: str):
     return JSONResponse({"ok": ok})
 
 
-def _get_delivery(session: Session, delivery_id: UUID) -> DeliveryOutbox:
-    row = session.get(DeliveryOutbox, delivery_id)
+_DELIVERY_QUERY_COLUMNS = (
+    "id",
+    "job_id",
+    "client_name",
+    "payload_s3_key",
+    "default_target_url",
+    "override_target_url",
+    "preview_url",
+    "status",
+    "scheduled_for",
+    "attempt_count",
+    "site_check_attempts",
+    "site_check_next_at",
+    "last_error",
+    "created_at",
+    "updated_at",
+    "sent_at",
+)
+
+_DELIVERY_TEXT_DEFAULTS = {
+    "job_id": "''",
+    "client_name": "''",
+    "payload_s3_key": "''",
+    "default_target_url": "''",
+    "status": "''",
+}
+
+_DELIVERY_TIME_DEFAULTS = {
+    "created_at": "NOW()",
+    "updated_at": "NOW()",
+}
+
+
+def _website_tier_label(tier: str) -> str:
+    return "Express" if normalize_delivery_tier(tier) == "express" else "Pro"
+
+
+def _table_columns(session: Session, table_name: str) -> set[str]:
+    stmt = text(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = :table_name
+        """
+    )
+    return {str(row[0]) for row in session.execute(stmt, {"table_name": table_name}).all()}
+
+
+def _column_projection(column: str, columns: set[str]) -> str:
+    if column in columns:
+        if column in ("attempt_count", "site_check_attempts"):
+            return f"COALESCE({column}, 0) AS {column}"
+        return f"{column} AS {column}"
+    if column in ("attempt_count", "site_check_attempts"):
+        return f"0 AS {column}"
+    if column in _DELIVERY_TEXT_DEFAULTS:
+        return f"{_DELIVERY_TEXT_DEFAULTS[column]} AS {column}"
+    if column in _DELIVERY_TIME_DEFAULTS:
+        return f"{_DELIVERY_TIME_DEFAULTS[column]} AS {column}"
+    if column == "id":
+        return "'00000000-0000-0000-0000-000000000000'::uuid AS id"
+    return f"NULL AS {column}"
+
+
+def _delivery_select_sql(table_name: str, columns: set[str], tier_label: str) -> str:
+    projected = [_column_projection(column, columns) for column in _DELIVERY_QUERY_COLUMNS]
+    projected.append(f"'{tier_label}' AS website_tier")
+    return f"SELECT {', '.join(projected)} FROM {table_name}"
+
+
+def _fetch_delivery_row(session: Session, delivery_id: UUID, *, tier: str) -> dict:
+    tier_name = normalize_delivery_tier(tier)
+    table_name = delivery_outbox_table_name_for_tier(tier_name)
+    columns = _table_columns(session, table_name)
+    if not columns:
+        raise HTTPException(status_code=404, detail="delivery not found")
+
+    select_sql = _delivery_select_sql(table_name, columns, _website_tier_label(tier_name))
+    stmt = text(f"SELECT * FROM ({select_sql}) AS deliveries WHERE id = :delivery_id")
+    row = session.execute(stmt, {"delivery_id": delivery_id}).mappings().first()
     if row is None:
         raise HTTPException(status_code=404, detail="delivery not found")
-    return row
+    return dict(row)
+
+
+def _update_override_url(session: Session, delivery_id: UUID, override_target_url: str, *, tier: str) -> None:
+    tier_name = normalize_delivery_tier(tier)
+    table_name = delivery_outbox_table_name_for_tier(tier_name)
+    columns = _table_columns(session, table_name)
+    if not columns or "override_target_url" not in columns:
+        raise HTTPException(status_code=404, detail="delivery not found")
+
+    set_clauses = ["override_target_url = :override_target_url"]
+    if "updated_at" in columns:
+        set_clauses.append("updated_at = NOW()")
+
+    stmt = text(f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE id = :delivery_id")
+    result = session.execute(
+        stmt,
+        {
+            "delivery_id": delivery_id,
+            "override_target_url": override_target_url,
+        },
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="delivery not found")
 
 
 @router.get("/api/deliveries", response_model=DeliveryListResponse)
@@ -246,23 +349,49 @@ def list_deliveries(
         page_size,
         _safe_db_location(),
     )
-    filters = []
+    pro_table = delivery_outbox_table_name_for_tier("pro")
+    express_table = delivery_outbox_table_name_for_tier("express")
+    pro_cols = _table_columns(session, pro_table)
+    express_cols = _table_columns(session, express_table)
+
+    if not pro_cols:
+        raise HTTPException(status_code=500, detail="delivery_outbox table not available")
+
+    # /ui/deliveries now unions Pro + Express outboxes into one result set.
+    union_parts = [
+        _delivery_select_sql(pro_table, pro_cols, "Pro"),
+    ]
+    if express_cols:
+        union_parts.append(_delivery_select_sql(express_table, express_cols, "Express"))
+
+    union_sql = " UNION ALL ".join(union_parts)
+    where_clauses = []
+    params: dict[str, object] = {
+        "offset": (page - 1) * page_size,
+        "limit": page_size,
+    }
     if status:
-        filters.append(DeliveryOutbox.status == status)
+        where_clauses.append("status = :status")
+        params["status"] = status
     if client:
-        filters.append(DeliveryOutbox.client_name.ilike(f"%{client}%"))
+        where_clauses.append("client_name ILIKE :client")
+        params["client"] = f"%{client}%"
 
-    count_stmt = select(func.count()).select_from(DeliveryOutbox)
-    if filters:
-        count_stmt = count_stmt.where(*filters)
-    total = session.execute(count_stmt).scalar_one()
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    count_stmt = text(f"SELECT COUNT(*) FROM ({union_sql}) AS deliveries {where_sql}")
+    total = int(session.execute(count_stmt, params).scalar_one() or 0)
 
-    stmt = select(DeliveryOutbox)
-    if filters:
-        stmt = stmt.where(*filters)
-    stmt = stmt.order_by(DeliveryOutbox.created_at.desc())
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-    items = session.execute(stmt).scalars().all()
+    list_stmt = text(
+        f"""
+        SELECT *
+        FROM ({union_sql}) AS deliveries
+        {where_sql}
+        ORDER BY created_at DESC NULLS LAST
+        OFFSET :offset
+        LIMIT :limit
+        """
+    )
+    items = session.execute(list_stmt, params).mappings().all()
 
     logger.info(
         "ui_list_deliveries_ok total=%s returned=%s",
@@ -270,7 +399,7 @@ def list_deliveries(
         len(items),
     )
     return DeliveryListResponse(
-        items=[DeliveryOutboxSchema.model_validate(item) for item in items],
+        items=[DeliveryOutboxSchema.model_validate(dict(item)) for item in items],
         page=page,
         page_size=page_size,
         total=total,
@@ -282,19 +411,25 @@ def list_deliveries(
 def set_override_url(
     delivery_id: UUID,
     payload: OverrideURLRequest,
+    tier: str | None = Query(default=None),
     session: Session = Depends(get_db_session),
 ):
-    row = _get_delivery(session, delivery_id)
-    row.override_target_url = payload.override_target_url
+    tier_name = normalize_delivery_tier(tier)
+    _update_override_url(session, delivery_id, payload.override_target_url, tier=tier_name)
     session.commit()
-    session.refresh(row)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
     return DeliveryOutboxSchema.model_validate(row)
 
 
 @router.post("/deliveries/{delivery_id}/send-now", response_model=SendNowResponse)
-def send_now(delivery_id: UUID, session: Session = Depends(get_db_session)):
-    _get_delivery(session, delivery_id)
-    async_result = send_delivery.delay(str(delivery_id))
+def send_now(
+    delivery_id: UUID,
+    tier: str | None = Query(default=None),
+    session: Session = Depends(get_db_session),
+):
+    tier_name = normalize_delivery_tier(tier)
+    _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    async_result = send_delivery.delay(str(delivery_id), tier_name)
     return SendNowResponse(ok=True, task_id=async_result.id)
 
 
@@ -302,41 +437,55 @@ def send_now(delivery_id: UUID, session: Session = Depends(get_db_session)):
 def delete_failed_delivery(
     delivery_id: UUID,
     delete_copy: bool = Query(default=False),
+    tier: str | None = Query(default=None),
     session: Session = Depends(get_db_session),
 ):
-    row = _get_delivery(session, delivery_id)
-    if (row.status or "").upper() != "FAILED":
+    tier_name = normalize_delivery_tier(tier)
+    table_name = delivery_outbox_table_name_for_tier(tier_name)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    if str(row.get("status") or "").upper() != "FAILED":
         raise HTTPException(status_code=400, detail="only FAILED deliveries can be deleted")
 
-    job_id = row.job_id
-    session.delete(row)
+    job_id = str(row.get("job_id") or "").strip()
+    result = session.execute(text(f"DELETE FROM {table_name} WHERE id = :delivery_id"), {"delivery_id": delivery_id})
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="delivery not found")
     session.commit()
 
     # Optionally delete the stored copy payload (Postgres soft-delete -> 48h grace -> permanent destroy).
     # NOTE: /ui routes are currently unauthenticated; be mindful if this service is public.
-    if delete_copy:
+    if delete_copy and job_id:
         try:
             deleted_id = soft_delete_job_copy(job_id=job_id)
             if deleted_id:
                 finalize_deleted_job_copy.apply_async(args=[job_id], countdown=int(SOFT_DELETE_HOURS_DEFAULT * 3600))
                 logger.info(
-                    "delivery_delete_soft_deleted_copy delivery_id=%s job_id=%s deleted_id=%s grace_hours=%s",
+                    "delivery_delete_soft_deleted_copy delivery_id=%s tier=%s job_id=%s deleted_id=%s grace_hours=%s",
                     str(delivery_id),
+                    tier_name,
                     job_id,
                     str(deleted_id),
                     SOFT_DELETE_HOURS_DEFAULT,
                 )
         except Exception as exc:
             # Don't block deleting the delivery row if copy cleanup fails.
-            logger.warning("delivery_delete_soft_delete_copy_failed delivery_id=%s job_id=%s err=%s", str(delivery_id), job_id, exc)
+            logger.warning(
+                "delivery_delete_soft_delete_copy_failed delivery_id=%s tier=%s job_id=%s err=%s",
+                str(delivery_id),
+                tier_name,
+                job_id,
+                exc,
+            )
 
     # Keep payload files around briefly for troubleshooting; purge a week after deletion.
     # If delete_copy=true, finalize_deleted_job_copy will also purge the disk file earlier.
     purge_after_seconds = 7 * 24 * 60 * 60
-    purge_local_payload.apply_async(args=[job_id], countdown=purge_after_seconds)
+    if job_id:
+        purge_local_payload.apply_async(args=[job_id], countdown=purge_after_seconds)
     logger.info(
-        "delivery_deleted delivery_id=%s job_id=%s purge_in_days=7",
+        "delivery_deleted delivery_id=%s tier=%s job_id=%s purge_in_days=7",
         str(delivery_id),
+        tier_name,
         job_id,
     )
     return JSONResponse({"ok": True})
@@ -393,6 +542,7 @@ async def deliveries_page():
                 <tr>
                   <th scope="col">Client</th>
                   <th scope="col">Job ID</th>
+                  <th scope="col">Website Tier</th>
                   <th scope="col">Status</th>
                   <th scope="col">Created</th>
                   <th scope="col">Delivery URL</th>
@@ -400,7 +550,7 @@ async def deliveries_page():
                 </tr>
               </thead>
               <tbody id="deliveriesBody">
-                <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
               </tbody>
             </table>
           </div>
@@ -431,7 +581,7 @@ async def deliveries_page():
           }
 
           async function loadDeliveries(){
-            body.innerHTML = `<tr><td colspan="6" class="text-muted">Loading…</td></tr>`;
+            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
             const params = new URLSearchParams();
             const client = (clientFilter.value || "").trim();
             const status = (statusFilter.value || "").trim();
@@ -442,34 +592,37 @@ async def deliveries_page():
             try {
               data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
             } catch (e) {
-              body.innerHTML = `<tr><td colspan="6" class="text-danger">Failed to load deliveries.</td></tr>`;
+              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
               return;
             }
 
             const items = data.items || [];
             if (!items.length){
-              body.innerHTML = `<tr><td colspan="6" class="text-muted">No deliveries found.</td></tr>`;
+              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
               return;
             }
 
             body.innerHTML = items.map(item => {
+              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
+              const rowKey = `${tier}-${item.id}`;
               const urlValue = item.override_target_url || "";
               const placeholder = item.default_target_url || "";
               const canDelete = String(item.status || "").toUpperCase() === "FAILED";
               const deleteBtn = canDelete
-                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}')">Delete</button>`
+                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
                 : ``;
               return `
                 <tr>
                   <td>${item.client_name || ""}</td>
                   <td class="text-monospace small">${item.job_id || ""}</td>
+                  <td>${item.website_tier || "Pro"}</td>
                   <td>${item.status || ""}</td>
                   <td class="text-muted small">${formatDate(item.created_at)}</td>
                   <td>
-                    <input id="delivery-url-${item.id}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
+                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
                   </td>
                   <td class="text-nowrap">
-                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}')">Send</button>
+                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}', '${tier}')">Send</button>
                     ${deleteBtn}
                   </td>
                 </tr>
@@ -479,32 +632,35 @@ async def deliveries_page():
             lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
           }
 
-          async function sendNow(id){
-            const input = document.getElementById(`delivery-url-${id}`);
+          async function sendNow(id, tier){
+            const rowKey = `${tier}-${id}`;
+            const input = document.getElementById(`delivery-url-${rowKey}`);
             const url = (input ? input.value : "").trim();
             if (!url){
               alert("Please enter a Delivery URL first.");
               return;
             }
+            const qs = `?tier=${encodeURIComponent(tier)}`;
             try {
-              await apiJSON(`/ui/deliveries/${id}/override-url`, {
+              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({override_target_url: url})
               });
-              await apiJSON(`/ui/deliveries/${id}/send-now`, { method: "POST" });
+              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
               await loadDeliveries();
             } catch (e) {
               alert("Failed to send. Check server logs.");
             }
           }
 
-          async function deleteDelivery(id){
+          async function deleteDelivery(id, tier){
             const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
             if (!ok) return;
             try {
               const alsoDeleteCopy = confirm("Also delete the stored job copy payload? It will move to Recently Deleted for 48 hours, then be destroyed.");
-              const qs = alsoDeleteCopy ? "?delete_copy=1" : "";
+              const base = `tier=${encodeURIComponent(tier)}`;
+              const qs = alsoDeleteCopy ? `?${base}&delete_copy=1` : `?${base}`;
               await apiJSON(`/ui/deliveries/${id}/delete${qs}`, { method: "POST" });
               await loadDeliveries();
             } catch (e) {
