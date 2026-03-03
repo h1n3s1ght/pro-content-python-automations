@@ -588,6 +588,18 @@ async def deliveries_page():
           body.admin-actions-enabled a.admin-action {
             display: inline-flex !important;
           }
+          .deliveries-flash-alert {
+            position: relative;
+            padding-right: 2.75rem;
+          }
+          .deliveries-flash-alert .btn-close {
+            position: absolute;
+            top: 50%;
+            right: 0.75rem;
+            transform: translateY(-50%);
+            margin: 0;
+            padding: 0.5rem;
+          }
         </style>
       </head>
       <body class="bg-light">
@@ -718,10 +730,10 @@ async def deliveries_page():
 	            const message = error || success;
 	            const cls = error ? "alert-danger" : "alert-success";
 	            flashMessage.innerHTML = `
-	              <div class="alert ${cls} alert-dismissible fade show py-2" role="alert">
-	                ${escapeHtml(message)}
-	                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-	              </div>
+		              <div class="alert ${cls} alert-dismissible fade show py-2 deliveries-flash-alert" role="alert">
+		                ${escapeHtml(message)}
+		                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+		              </div>
 	            `;
 	            params.delete("flash_success");
 	            params.delete("flash_error");
@@ -771,7 +783,7 @@ async def deliveries_page():
 	            body.innerHTML = items.map(item => {
 	              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
 	              const rowKey = `${tier}-${item.id}`;
-	              const encodedClientName = encodeURIComponent(item.client_name || "");
+	              const encodedClientName = encodeURIComponent(item.client_name || "").replace(/'/g, "%27");
 	              const urlValue = item.override_target_url || "";
 	              const placeholder = item.default_target_url || "";
 	              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
