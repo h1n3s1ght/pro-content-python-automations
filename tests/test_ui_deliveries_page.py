@@ -19,3 +19,6 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "Remove Delivery" in resp.text
     assert "Type the client name to confirm" in resp.text
     assert "Cancel Action" in resp.text
+    assert "class=\"admin-action\"" in resp.text
+    assert "adminActions" in resp.text
+    assert "admin-actions-enabled" in resp.text

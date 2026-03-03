@@ -552,6 +552,19 @@ async def deliveries_page():
         <meta charset="utf-8"/>
         <meta name="viewport" content="width=device-width, initial-scale=1"/>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+        <style>
+          .admin-action {
+            display: none !important;
+          }
+          body.admin-actions-enabled th.admin-action,
+          body.admin-actions-enabled td.admin-action {
+            display: table-cell !important;
+          }
+          body.admin-actions-enabled button.admin-action,
+          body.admin-actions-enabled a.admin-action {
+            display: inline-flex !important;
+          }
+        </style>
       </head>
       <body class="bg-light">
         <div class="container py-4">
@@ -599,7 +612,7 @@ async def deliveries_page():
                   <th scope="col">Status</th>
                   <th scope="col">Created</th>
                   <th scope="col">Delivery URL</th>
-                  <th scope="col">Actions</th>
+                  <th scope="col" class="admin-action">Actions</th>
                 </tr>
               </thead>
               <tbody id="deliveriesBody">
@@ -652,9 +665,14 @@ async def deliveries_page():
 	          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
 	          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
 	          const removeConfirmName = document.getElementById("removeConfirmName");
-	          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
-	          const removeConfirmError = document.getElementById("removeConfirmError");
-	          const removeModal = new bootstrap.Modal(removeModalEl);
+		          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
+		          const removeConfirmError = document.getElementById("removeConfirmError");
+		          const removeModal = new bootstrap.Modal(removeModalEl);
+		          const adminParams = new URLSearchParams(window.location.search);
+		          const isAdminActions = adminParams.get("adminActions") === "true";
+		          if (isAdminActions) {
+		            document.body.classList.add("admin-actions-enabled");
+		          }
 
 	          function escapeHtml(value){
 	            return String(value || "")
@@ -730,13 +748,13 @@ async def deliveries_page():
 	              const urlValue = item.override_target_url || "";
 	              const placeholder = item.default_target_url || "";
 	              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
-	              const deleteBtn = canDelete
-	                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
-	                : ``;
-	              const removeBtn = `<button class="btn btn-sm btn-danger ms-2" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
-	              return `
-	                <tr>
-	                  <td>${item.client_name || ""}</td>
+		              const deleteBtn = canDelete
+		                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
+		                : ``;
+		              const removeBtn = `<button class="btn btn-sm btn-danger ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
+		              return `
+		                <tr>
+		                  <td>${item.client_name || ""}</td>
                   <td class="text-monospace small">${item.job_id || ""}</td>
                   <td>${item.website_tier || "Pro"}</td>
                   <td>${item.status || ""}</td>
@@ -744,11 +762,11 @@ async def deliveries_page():
                   <td>
                     <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
                   </td>
-	                  <td class="text-nowrap">
-	                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}', '${tier}')">Send</button>
-	                    ${deleteBtn}
-	                    ${removeBtn}
-	                  </td>
+		                  <td class="text-nowrap admin-action">
+		                    <button class="btn btn-sm btn-primary admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
+		                    ${deleteBtn}
+		                    ${removeBtn}
+		                  </td>
 	                </tr>
 	              `;
             }).join("");
