@@ -616,15 +616,15 @@ async def deliveries_page():
             --accent-100: rgba(42,168,154,0.12);
             --accent-050: rgba(42,168,154,0.06);
 
-            --tier-pro-bg: rgba(42,168,154,0.16);
+            --tier-pro-bg: rgba(42,168,154,0.15);
             --tier-pro-pill: rgba(42,168,154,0.22);
             --tier-pro-text: #0f766e;
 
-            --tier-express-bg: rgba(245,158,11,0.14);
+            --tier-express-bg: rgba(245,158,11,0.15);
             --tier-express-pill: rgba(245,158,11,0.22);
             --tier-express-text: #92400e;
 
-            --tier-default-bg: rgba(100,116,139,0.08);
+            --tier-default-bg: rgba(100,116,139,0.15);
             --tier-default-pill: rgba(100,116,139,0.12);
             --tier-default-text: #334155;
 
@@ -764,6 +764,8 @@ async def deliveries_page():
           .tier-cell{
             border-left: 1px solid rgba(15,23,42,0.06);
             border-right: 1px solid rgba(15,23,42,0.06);
+            text-align: center;
+            vertical-align: middle;
           }
           .tier-cell.is-pro{ background: var(--tier-pro-bg); }
           .tier-cell.is-express{ background: var(--tier-express-bg); }
@@ -771,12 +773,14 @@ async def deliveries_page():
           .tier-pill{
             display:inline-flex;
             align-items:center;
+            justify-content: center;
             height: 28px;
             padding: 0 10px;
             border-radius: 999px;
             font-weight: 700;
             font-size: 12px;
             letter-spacing: .02em;
+            margin: 0 auto;
           }
           .tier-pill.is-pro{
             background: var(--tier-pro-pill);
@@ -968,15 +972,14 @@ async def deliveries_page():
 		          <div class="table-shell">
 		            <div class="table-responsive">
 		              <table class="table table-modern table-sm align-middle table-hover bg-white shadow-sm">
-	              <thead class="table-light">
-	                <tr>
-	                  <th scope="col">
-	                    <button type="button" class="sort-trigger" data-sort-key="client_name">Client<span class="sort-indicator" id="sort-indicator-client_name">↕</span></button>
-	                  </th>
-	                  <th scope="col">Job ID</th>
-	                  <th scope="col">
-	                    <button type="button" class="sort-trigger" data-sort-key="website_tier">Website Tier<span class="sort-indicator" id="sort-indicator-website_tier">↕</span></button>
-	                  </th>
+		              <thead class="table-light">
+		                <tr>
+		                  <th scope="col">
+		                    <button type="button" class="sort-trigger" data-sort-key="client_name">Client<span class="sort-indicator" id="sort-indicator-client_name">↕</span></button>
+		                  </th>
+		                  <th scope="col">
+		                    <button type="button" class="sort-trigger" data-sort-key="website_tier">Website Tier<span class="sort-indicator" id="sort-indicator-website_tier">↕</span></button>
+		                  </th>
 		                  <th scope="col">
 		                    <button type="button" class="sort-trigger" data-sort-key="status">Status<span class="sort-indicator" id="sort-indicator-status">↕</span></button>
 		                  </th>
@@ -986,11 +989,11 @@ async def deliveries_page():
 		                  <th scope="col" class="admin-action">Delivery URL</th>
 	                  <th scope="col" class="admin-action">Actions</th>
 	                </tr>
-              </thead>
-	              <tbody id="deliveriesBody">
-	                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
-			              </tbody>
-			              </table>
+		              </thead>
+		              <tbody id="deliveriesBody">
+		                <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+				              </tbody>
+				              </table>
 			            </div>
 			          </div>
 		        </div>
@@ -1309,7 +1312,7 @@ async def deliveries_page():
 
 		          function renderRows(items){
 		            if (!items.length){
-		              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
+		              body.innerHTML = `<tr><td colspan="6" class="text-muted">No deliveries found.</td></tr>`;
 		              return;
 	            }
 	            body.innerHTML = items.map(item => {
@@ -1326,7 +1329,6 @@ async def deliveries_page():
 		              return `
 		                <tr>
 		                  <td>${item.client_name || ""}</td>
-		                  <td class="text-monospace small">${item.job_id || ""}</td>
 		                  <td>${item.website_tier || "Pro"}</td>
 		                  <td>${formatStatusLabel(item.status)}</td>
 		                  <td class="text-muted small">${formatDate(item.created_at)}</td>
@@ -1351,7 +1353,7 @@ async def deliveries_page():
 	          }
 
 		          async function loadDeliveries(){
-		            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
+		            body.innerHTML = `<tr><td colspan="6" class="text-muted">Loading…</td></tr>`;
 		            const params = new URLSearchParams();
 		            syncDateRangeFromDays();
 		            const client = (clientFilter.value || "").trim();
@@ -1369,10 +1371,10 @@ async def deliveries_page():
 		            writeFilterPrefs();
 
 	            let data;
-	            try {
-	              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
-	            } catch (_) {
-	              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
+		            try {
+		              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
+		            } catch (_) {
+		              body.innerHTML = `<tr><td colspan="6" class="text-danger">Failed to load deliveries.</td></tr>`;
 		              return;
 		            }
 
