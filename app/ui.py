@@ -3,10 +3,10 @@ import json
 import os
 import logging
 from uuid import UUID
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, Form, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi import Query
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -333,6 +333,19 @@ def _update_override_url(session: Session, delivery_id: UUID, override_target_ur
         raise HTTPException(status_code=404, detail="delivery not found")
 
 
+def _deliveries_redirect(*, flash_success: str | None = None, flash_error: str | None = None) -> RedirectResponse:
+    params = {}
+    if flash_success:
+        params["flash_success"] = flash_success
+    if flash_error:
+        params["flash_error"] = flash_error
+
+    url = "/ui/deliveries"
+    if params:
+        url = f"{url}?{urlencode(params)}"
+    return RedirectResponse(url=url, status_code=303)
+
+
 @router.get("/api/deliveries", response_model=DeliveryListResponse)
 def list_deliveries(
     status: str | None = Query(default=None),
@@ -491,6 +504,45 @@ def delete_failed_delivery(
     return JSONResponse({"ok": True})
 
 
+@router.post("/deliveries/remove")
+def remove_delivery(
+    delivery_id: UUID = Form(...),
+    tier: str = Form(default="pro"),
+    confirm_name: str = Form(...),
+    session: Session = Depends(get_db_session),
+):
+    tier_name = normalize_delivery_tier(tier)
+    table_name = delivery_outbox_table_name_for_tier(tier_name)
+
+    try:
+        row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    except HTTPException:
+        return _deliveries_redirect(flash_error="Delivery not found. Nothing was removed.")
+
+    client_name = str(row.get("client_name") or "")
+    if confirm_name != client_name:
+        return _deliveries_redirect(flash_error="Confirmation text did not match exactly. Delivery was not removed.")
+
+    try:
+        result = session.execute(text(f"DELETE FROM {table_name} WHERE id = :delivery_id"), {"delivery_id": delivery_id})
+        if result.rowcount == 0:
+            session.rollback()
+            return _deliveries_redirect(flash_error="Delivery not found. Nothing was removed.")
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.exception(
+            "delivery_remove_failed delivery_id=%s tier=%s client=%s err=%s",
+            str(delivery_id),
+            tier_name,
+            client_name,
+            exc,
+        )
+        return _deliveries_redirect(flash_error="Failed to remove delivery due to a database error.")
+
+    return _deliveries_redirect(flash_success=f"Removed delivery for {client_name}.")
+
+
 @router.get("/deliveries", response_class=HTMLResponse)
 async def deliveries_page():
     html = """
@@ -515,10 +567,10 @@ async def deliveries_page():
             </div>
           </div>
 
-          <div class="row g-2 mb-3">
-            <div class="col-sm-5">
-              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
-            </div>
+	          <div class="row g-2 mb-3">
+	            <div class="col-sm-5">
+	              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
+	            </div>
             <div class="col-sm-3">
               <select id="statusFilter" class="form-select form-select-sm">
                 <option value="">All statuses</option>
@@ -531,13 +583,14 @@ async def deliveries_page():
                 <option>SENT</option>
               </select>
             </div>
-            <div class="col-sm-2">
-              <button id="applyFilters" class="btn btn-sm btn-primary w-100">Apply</button>
-            </div>
-          </div>
+	            <div class="col-sm-2">
+	              <button id="applyFilters" class="btn btn-sm btn-primary w-100">Apply</button>
+	            </div>
+	          </div>
+	          <div id="flashMessage"></div>
 
-          <div class="table-responsive">
-            <table class="table table-sm align-middle table-hover bg-white shadow-sm">
+	          <div class="table-responsive">
+	            <table class="table table-sm align-middle table-hover bg-white shadow-sm">
               <thead class="table-light">
                 <tr>
                   <th scope="col">Client</th>
@@ -551,21 +604,89 @@ async def deliveries_page():
               </thead>
               <tbody id="deliveriesBody">
                 <tr><td colspan="7" class="text-muted">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+	              </tbody>
+	            </table>
+	          </div>
+	        </div>
+	        <div class="modal fade" id="removeDeliveryModal" tabindex="-1" aria-labelledby="removeDeliveryModalTitle" aria-hidden="true">
+	          <div class="modal-dialog modal-dialog-centered">
+	            <div class="modal-content">
+	              <div class="modal-header">
+	                <h5 class="modal-title" id="removeDeliveryModalTitle">Remove Delivery</h5>
+	                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+	              </div>
+	              <form id="removeDeliveryForm" method="POST" action="/ui/deliveries/remove">
+	                <div class="modal-body">
+	                  <p class="mb-2">Are you sure you wish to remove this?</p>
+	                  <p class="mb-3">Client: <strong id="removeDeliveryClientName"></strong></p>
+	                  <input type="hidden" name="delivery_id" id="removeDeliveryId" />
+	                  <input type="hidden" name="tier" id="removeDeliveryTier" />
+	                  <input type="hidden" id="removeExpectedClientName" />
+	                  <div class="mb-3">
+	                    <label class="form-label" for="removeConfirmName">Type the client name to confirm</label>
+	                    <input type="text" class="form-control" name="confirm_name" id="removeConfirmName" autocomplete="off" required />
+	                  </div>
+	                  <div id="removeConfirmError" class="alert alert-danger py-2 mb-0 d-none"></div>
+	                </div>
+	                <div class="modal-footer">
+	                  <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel Action</button>
+	                  <button type="submit" class="btn btn-danger" id="removeConfirmBtn" disabled>I’m sure</button>
+	                </div>
+	              </form>
+	            </div>
+	          </div>
+	        </div>
+	        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+	        <script>
+	          const body = document.getElementById("deliveriesBody");
+	          const refreshBtn = document.getElementById("refreshBtn");
+	          const lastUpdated = document.getElementById("lastUpdated");
+	          const clientFilter = document.getElementById("clientFilter");
+	          const statusFilter = document.getElementById("statusFilter");
+	          const applyFilters = document.getElementById("applyFilters");
+	          const flashMessage = document.getElementById("flashMessage");
+	          const removeModalEl = document.getElementById("removeDeliveryModal");
+	          const removeForm = document.getElementById("removeDeliveryForm");
+	          const removeDeliveryId = document.getElementById("removeDeliveryId");
+	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
+	          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
+	          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
+	          const removeConfirmName = document.getElementById("removeConfirmName");
+	          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
+	          const removeConfirmError = document.getElementById("removeConfirmError");
+	          const removeModal = new bootstrap.Modal(removeModalEl);
 
-        <script>
-          const body = document.getElementById("deliveriesBody");
-          const refreshBtn = document.getElementById("refreshBtn");
-          const lastUpdated = document.getElementById("lastUpdated");
-          const clientFilter = document.getElementById("clientFilter");
-          const statusFilter = document.getElementById("statusFilter");
-          const applyFilters = document.getElementById("applyFilters");
+	          function escapeHtml(value){
+	            return String(value || "")
+	              .replace(/&/g, "&amp;")
+	              .replace(/</g, "&lt;")
+	              .replace(/>/g, "&gt;")
+	              .replace(/"/g, "&quot;")
+	              .replace(/'/g, "&#39;");
+	          }
 
-          function formatDate(ts){
-            if (!ts) return "";
+	          function renderFlashFromQuery(){
+	            const params = new URLSearchParams(window.location.search);
+	            const success = (params.get("flash_success") || "").trim();
+	            const error = (params.get("flash_error") || "").trim();
+	            if (!success && !error) return;
+	            const message = error || success;
+	            const cls = error ? "alert-danger" : "alert-success";
+	            flashMessage.innerHTML = `
+	              <div class="alert ${cls} alert-dismissible fade show py-2" role="alert">
+	                ${escapeHtml(message)}
+	                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+	              </div>
+	            `;
+	            params.delete("flash_success");
+	            params.delete("flash_error");
+	            const nextQuery = params.toString();
+	            const nextUrl = nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname;
+	            window.history.replaceState({}, "", nextUrl);
+	          }
+
+	          function formatDate(ts){
+	            if (!ts) return "";
             try {
               const d = new Date(ts);
               return d.toLocaleString();
@@ -602,18 +723,20 @@ async def deliveries_page():
               return;
             }
 
-            body.innerHTML = items.map(item => {
-              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
-              const rowKey = `${tier}-${item.id}`;
-              const urlValue = item.override_target_url || "";
-              const placeholder = item.default_target_url || "";
-              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
-              const deleteBtn = canDelete
-                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
-                : ``;
-              return `
-                <tr>
-                  <td>${item.client_name || ""}</td>
+	            body.innerHTML = items.map(item => {
+	              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
+	              const rowKey = `${tier}-${item.id}`;
+	              const encodedClientName = encodeURIComponent(item.client_name || "");
+	              const urlValue = item.override_target_url || "";
+	              const placeholder = item.default_target_url || "";
+	              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
+	              const deleteBtn = canDelete
+	                ? `<button class="btn btn-sm btn-outline-danger ms-2" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
+	                : ``;
+	              const removeBtn = `<button class="btn btn-sm btn-danger ms-2" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
+	              return `
+	                <tr>
+	                  <td>${item.client_name || ""}</td>
                   <td class="text-monospace small">${item.job_id || ""}</td>
                   <td>${item.website_tier || "Pro"}</td>
                   <td>${item.status || ""}</td>
@@ -621,12 +744,13 @@ async def deliveries_page():
                   <td>
                     <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
                   </td>
-                  <td class="text-nowrap">
-                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}', '${tier}')">Send</button>
-                    ${deleteBtn}
-                  </td>
-                </tr>
-              `;
+	                  <td class="text-nowrap">
+	                    <button class="btn btn-sm btn-primary" onclick="sendNow('${item.id}', '${tier}')">Send</button>
+	                    ${deleteBtn}
+	                    ${removeBtn}
+	                  </td>
+	                </tr>
+	              `;
             }).join("");
 
             lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -665,14 +789,50 @@ async def deliveries_page():
               await loadDeliveries();
             } catch (e) {
               alert("Failed to delete. Check server logs.");
-            }
-          }
+	            }
+	          }
 
-          refreshBtn.addEventListener("click", loadDeliveries);
-          applyFilters.addEventListener("click", loadDeliveries);
+	          function validateRemoveModalInput(){
+	            const expected = removeExpectedClientName.value || "";
+	            const typed = removeConfirmName.value || "";
+	            const matches = typed === expected;
+	            removeConfirmBtn.disabled = !matches;
+	            if (typed && !matches){
+	              removeConfirmError.textContent = "Typed client name must exactly match.";
+	              removeConfirmError.classList.remove("d-none");
+	            } else {
+	              removeConfirmError.classList.add("d-none");
+	              removeConfirmError.textContent = "";
+	            }
+	          }
 
-          loadDeliveries();
-        </script>
+	          function openRemoveModal(id, tier, encodedClientName){
+	            const clientName = decodeURIComponent(encodedClientName || "");
+	            removeDeliveryId.value = id;
+	            removeDeliveryTier.value = tier;
+	            removeExpectedClientName.value = clientName;
+	            removeDeliveryClientName.textContent = clientName;
+	            removeConfirmName.value = "";
+	            removeConfirmBtn.disabled = true;
+	            removeConfirmError.classList.add("d-none");
+	            removeConfirmError.textContent = "";
+	            removeModal.show();
+	          }
+
+	          removeConfirmName.addEventListener("input", validateRemoveModalInput);
+	          removeForm.addEventListener("submit", (event) => {
+	            if (removeConfirmName.value !== removeExpectedClientName.value){
+	              event.preventDefault();
+	              validateRemoveModalInput();
+	            }
+	          });
+
+	          refreshBtn.addEventListener("click", loadDeliveries);
+	          applyFilters.addEventListener("click", loadDeliveries);
+
+	          renderFlashFromQuery();
+	          loadDeliveries();
+	        </script>
       </body>
     </html>
     """

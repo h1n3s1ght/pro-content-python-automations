@@ -16,3 +16,6 @@ def test_ui_deliveries_page_contains_website_tier_column():
 
     assert resp.status_code == 200
     assert "Website Tier" in resp.text
+    assert "Remove Delivery" in resp.text
+    assert "Type the client name to confirm" in resp.text
+    assert "Cancel Action" in resp.text
