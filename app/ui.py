@@ -397,9 +397,14 @@ def list_deliveries(
         "offset": (page - 1) * page_size,
         "limit": page_size,
     }
-    if status:
-        where_clauses.append("status = :status")
-        params["status"] = status
+    status_values = [s.strip().upper() for s in str(status or "").split(",") if s.strip()]
+    if status_values:
+        status_param_keys = []
+        for idx, status_value in enumerate(status_values):
+            key = f"status_{idx}"
+            status_param_keys.append(f":{key}")
+            params[key] = status_value
+        where_clauses.append(f"status IN ({', '.join(status_param_keys)})")
     if client:
         where_clauses.append("client_name ILIKE :client")
         params["client"] = f"%{client}%"
@@ -665,6 +670,34 @@ async def deliveries_page():
             border-color: var(--line);
             border-radius: 10px;
           }
+          .toolbar .status-filter-btn{
+            height: 40px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: #fff;
+            color: var(--text-700);
+            text-align: left;
+          }
+          .toolbar .status-filter-btn:focus{
+            border-color: var(--accent-500);
+            box-shadow: 0 0 0 4px var(--accent-100);
+          }
+          .status-filter-menu{
+            min-width: 100%;
+            max-height: 280px;
+            overflow-y: auto;
+            border-radius: 10px;
+            border-color: var(--line-soft);
+          }
+          .status-select-toggle{
+            color: var(--accent-600);
+            text-decoration: none;
+            font-weight: 600;
+          }
+          .status-select-toggle:hover{
+            color: var(--accent-600);
+            text-decoration: underline;
+          }
           .toolbar .form-control:focus,
           .toolbar .form-select:focus{
             border-color: var(--accent-500);
@@ -862,18 +895,51 @@ async def deliveries_page():
 		            <div class="col-sm-4">
 		              <input id="clientFilter" class="form-control form-control-sm" placeholder="Filter by client name" />
 		            </div>
-	            <div class="col-sm-2">
-	              <select id="statusFilter" class="form-select form-select-sm">
-	                <option value="">All statuses</option>
-	                <option>WAITING_FOR_SITE</option>
-	                <option>CHECKING_SITE</option>
-	                <option>READY_TO_SEND</option>
-	                <option>COMPLETED_PENDING_SEND</option>
-	                <option>FAILED</option>
-	                <option>SENDING</option>
-	                <option>SENT</option>
-	              </select>
-	            </div>
+		            <div class="col-sm-2">
+		              <div class="dropdown w-100" data-bs-auto-close="outside">
+		                <button
+		                  id="statusFilterButton"
+		                  class="btn status-filter-btn form-control-sm w-100 d-flex justify-content-between align-items-center"
+		                  type="button"
+		                  data-bs-toggle="dropdown"
+		                  aria-expanded="false"
+		                >
+		                  <span id="statusFilterLabel">All statuses</span>
+		                  <span class="small text-muted">▾</span>
+		                </button>
+		                <div class="dropdown-menu status-filter-menu p-2">
+		                  <button type="button" id="statusSelectAllToggle" class="btn btn-sm status-select-toggle mb-2 px-1">Select All</button>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="WAITING_FOR_SITE" id="delivery-status-waiting">
+		                    <label class="form-check-label" for="delivery-status-waiting">AWAIT SITE</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="CHECKING_SITE" id="delivery-status-checking">
+		                    <label class="form-check-label" for="delivery-status-checking">CHECK SITE</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="READY_TO_SEND" id="delivery-status-ready">
+		                    <label class="form-check-label" for="delivery-status-ready">READY</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="COMPLETED_PENDING_SEND" id="delivery-status-pending-send">
+		                    <label class="form-check-label" for="delivery-status-pending-send">PENDING SEND</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="FAILED" id="delivery-status-failed">
+		                    <label class="form-check-label" for="delivery-status-failed">FAILED</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="SENDING" id="delivery-status-sending">
+		                    <label class="form-check-label" for="delivery-status-sending">SENDING</label>
+		                  </div>
+		                  <div class="form-check">
+		                    <input class="form-check-input delivery-status-filter" type="checkbox" value="SENT" id="delivery-status-sent">
+		                    <label class="form-check-label" for="delivery-status-sent">SENT</label>
+		                  </div>
+		                </div>
+		              </div>
+		            </div>
 	            <div class="col-sm-2">
 	              <select id="tierFilter" class="form-select form-select-sm">
 	                <option value="">All tiers</option>
@@ -911,13 +977,15 @@ async def deliveries_page():
 	                  <th scope="col">
 	                    <button type="button" class="sort-trigger" data-sort-key="website_tier">Website Tier<span class="sort-indicator" id="sort-indicator-website_tier">↕</span></button>
 	                  </th>
+		                  <th scope="col">
+		                    <button type="button" class="sort-trigger" data-sort-key="status">Status<span class="sort-indicator" id="sort-indicator-status">↕</span></button>
+		                  </th>
 	                  <th scope="col">
-	                    <button type="button" class="sort-trigger" data-sort-key="status">Status<span class="sort-indicator" id="sort-indicator-status">↕</span></button>
+	                    <button type="button" class="sort-trigger" data-sort-key="created_at">Created<span class="sort-indicator" id="sort-indicator-created_at">↕</span></button>
 	                  </th>
-                  <th scope="col">Created</th>
-	                  <th scope="col" class="admin-action">Delivery URL</th>
-                  <th scope="col" class="admin-action">Actions</th>
-                </tr>
+		                  <th scope="col" class="admin-action">Delivery URL</th>
+	                  <th scope="col" class="admin-action">Actions</th>
+	                </tr>
               </thead>
 	              <tbody id="deliveriesBody">
 	                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
@@ -960,13 +1028,16 @@ async def deliveries_page():
 	        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 	        <script>
 	          const body = document.getElementById("deliveriesBody");
-	          const refreshBtn = document.getElementById("refreshBtn");
-	          const lastUpdated = document.getElementById("lastUpdated");
-	          const clientFilter = document.getElementById("clientFilter");
-	          const statusFilter = document.getElementById("statusFilter");
-	          const tierFilter = document.getElementById("tierFilter");
-	          const daysBackFilter = document.getElementById("daysBackFilter");
-	          const createdFromFilter = document.getElementById("createdFromFilter");
+		          const refreshBtn = document.getElementById("refreshBtn");
+		          const lastUpdated = document.getElementById("lastUpdated");
+		          const clientFilter = document.getElementById("clientFilter");
+		          const statusFilterButton = document.getElementById("statusFilterButton");
+		          const statusFilterLabel = document.getElementById("statusFilterLabel");
+		          const statusSelectAllToggle = document.getElementById("statusSelectAllToggle");
+		          const statusCheckboxes = Array.from(document.querySelectorAll(".delivery-status-filter"));
+		          const tierFilter = document.getElementById("tierFilter");
+		          const daysBackFilter = document.getElementById("daysBackFilter");
+		          const createdFromFilter = document.getElementById("createdFromFilter");
 	          const createdToFilter = document.getElementById("createdToFilter");
 	          const applyFilters = document.getElementById("applyFilters");
 	          const sortButtons = Array.from(document.querySelectorAll(".sort-trigger[data-sort-key]"));
@@ -984,11 +1055,21 @@ async def deliveries_page():
 	          const removeModal = new bootstrap.Modal(removeModalEl);
 	          const adminParams = new URLSearchParams(window.location.search);
 	          const isAdminActions = adminParams.get("adminActions") === "true" || adminParams.get("adminAction") === "true";
-	          const FILTER_COOKIE = "ui_deliveries_filters_v1";
-	          const FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
-	          let activeSortKey = null;
-	          let activeSortDir = "asc";
-	          let rawItems = [];
+		          const FILTER_COOKIE = "ui_deliveries_filters_v1";
+		          const FILTER_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
+		          const STATUS_LABELS = {
+		            WAITING_FOR_SITE: "AWAIT SITE",
+		            CHECKING_SITE: "CHECK SITE",
+		            READY_TO_SEND: "READY",
+		            COMPLETED_PENDING_SEND: "PENDING SEND",
+		            FAILED: "FAILED",
+		            SENDING: "SENDING",
+		            SENT: "SENT",
+		          };
+		          const STATUS_KEYS = Object.keys(STATUS_LABELS);
+		          let activeSortKey = null;
+		          let activeSortDir = "asc";
+		          let rawItems = [];
 
 	          if (isAdminActions) {
 	            document.body.classList.add("admin-actions-enabled");
@@ -1018,11 +1099,43 @@ async def deliveries_page():
 	            return d.toISOString().slice(0, 16);
 	          }
 
-	          function parseDateTimeLocalToISO(value){
-	            if (!value) return "";
-	            const d = new Date(value);
-	            return Number.isNaN(d.getTime()) ? "" : d.toISOString();
-	          }
+		          function parseDateTimeLocalToISO(value){
+		            if (!value) return "";
+		            const d = new Date(value);
+		            return Number.isNaN(d.getTime()) ? "" : d.toISOString();
+		          }
+
+		          function formatStatusLabel(status){
+		            const key = String(status || "").trim().toUpperCase();
+		            return STATUS_LABELS[key] || key;
+		          }
+
+		          function getSelectedStatuses(){
+		            return statusCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+		          }
+
+		          function setSelectedStatuses(values){
+		            const selected = new Set((values || []).map((value) => String(value || "").trim().toUpperCase()));
+		            for (const checkbox of statusCheckboxes){
+		              checkbox.checked = selected.has(checkbox.value);
+		            }
+		          }
+
+		          function updateStatusFilterUI(){
+		            const selected = getSelectedStatuses();
+		            const total = statusCheckboxes.length;
+		            const allSelected = selected.length === total;
+
+		            if (selected.length === 0 || allSelected){
+		              statusFilterLabel.textContent = "All statuses";
+		            } else if (selected.length === 1){
+		              statusFilterLabel.textContent = formatStatusLabel(selected[0]);
+		            } else {
+		              statusFilterLabel.textContent = `${selected.length} selected`;
+		            }
+
+		            statusSelectAllToggle.textContent = allSelected ? "Deselect All" : "Select All";
+		          }
 
 	          function defaultDateRange(){
 	            const now = new Date();
@@ -1071,37 +1184,57 @@ async def deliveries_page():
 	            }
 	          }
 
-	          function writeFilterPrefs(){
-	            const payload = {
-	              client: (clientFilter.value || "").trim(),
-	              status: (statusFilter.value || "").trim(),
-	              tier: (tierFilter.value || "").trim(),
-	              days_back: (daysBackFilter.value || "").trim(),
-	              created_from: (createdFromFilter.value || "").trim(),
-	            };
-	            document.cookie = `${FILTER_COOKIE}=${encodeURIComponent(JSON.stringify(payload))}; Max-Age=${FILTER_COOKIE_MAX_AGE}; Path=/; SameSite=Lax`;
+		          function writeFilterPrefs(){
+		            const payload = {
+		              client: (clientFilter.value || "").trim(),
+		              statuses: getSelectedStatuses(),
+		              tier: (tierFilter.value || "").trim(),
+		              days_back: (daysBackFilter.value || "").trim(),
+		              created_from: (createdFromFilter.value || "").trim(),
+		            };
+		            document.cookie = `${FILTER_COOKIE}=${encodeURIComponent(JSON.stringify(payload))}; Max-Age=${FILTER_COOKIE_MAX_AGE}; Path=/; SameSite=Lax`;
 	          }
 
-	          function restoreFilterPrefs(){
-	            const saved = readFilterPrefs();
-	            const defaults = defaultDateRange();
-	            clientFilter.value = saved?.client || "";
-	            statusFilter.value = saved?.status || "";
-	            tierFilter.value = saved?.tier || "";
-	            daysBackFilter.value = saved?.days_back || defaults.days_back;
-	            const days = syncDateRangeFromDays();
-	            if (days === null){
+		          function restoreFilterPrefs(){
+		            const saved = readFilterPrefs();
+		            const defaults = defaultDateRange();
+		            clientFilter.value = saved?.client || "";
+		            let savedStatuses = [];
+		            if (Array.isArray(saved?.statuses)){
+		              savedStatuses = saved.statuses;
+		            } else if (typeof saved?.status === "string" && saved.status.trim()){
+		              savedStatuses = [saved.status.trim()];
+		            } else {
+		              savedStatuses = STATUS_KEYS;
+		            }
+		            setSelectedStatuses(savedStatuses);
+		            updateStatusFilterUI();
+		            tierFilter.value = saved?.tier || "";
+		            daysBackFilter.value = saved?.days_back || defaults.days_back;
+		            const days = syncDateRangeFromDays();
+		            if (days === null){
 	              createdFromFilter.value = saved?.created_from || defaults.created_from;
 	              createdToFilter.value = toDateTimeLocalValue(new Date());
 	            }
 	          }
 
-	          function normalizeSortValue(item, key){
-	            const raw = String(item?.[key] || "").trim().toLocaleLowerCase();
-	            if (key === "client_name"){
-	              return raw.replace(/^the\\s+/i, "");
-	            }
-	            return raw;
+			          function normalizeSortValue(item, key){
+			            if (key === "created_at"){
+			              const rawCreated = item?.created_at ?? item?.created ?? "";
+			              if (typeof rawCreated === "number" && Number.isFinite(rawCreated)){
+			                return rawCreated;
+			              }
+			              const parsed = Date.parse(String(rawCreated || "").trim());
+			              return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
+			            }
+			            if (key === "status"){
+			              return formatStatusLabel(item?.status).toLocaleLowerCase();
+			            }
+			            const raw = String(item?.[key] || "").trim().toLocaleLowerCase();
+			            if (key === "client_name"){
+			              return raw.replace(/^the\\s+/i, "");
+			            }
+		            return raw;
 	          }
 
 	          function sortItems(items){
@@ -1190,15 +1323,15 @@ async def deliveries_page():
 	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
 	                : ``;
 	              const removeBtn = `<button class="btn btn-pill btn-remove ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
-	              return `
-	                <tr>
-	                  <td>${item.client_name || ""}</td>
-	                  <td class="text-monospace small">${item.job_id || ""}</td>
-	                  <td>${item.website_tier || "Pro"}</td>
-	                  <td>${item.status || ""}</td>
-	                  <td class="text-muted small">${formatDate(item.created_at)}</td>
-		                  <td class="admin-action">
-		                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm url-input" placeholder="${placeholder}" value="${urlValue}" />
+		              return `
+		                <tr>
+		                  <td>${item.client_name || ""}</td>
+		                  <td class="text-monospace small">${item.job_id || ""}</td>
+		                  <td>${item.website_tier || "Pro"}</td>
+		                  <td>${formatStatusLabel(item.status)}</td>
+		                  <td class="text-muted small">${formatDate(item.created_at)}</td>
+			                  <td class="admin-action">
+			                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm url-input" placeholder="${placeholder}" value="${urlValue}" />
 		                  </td>
 		                  <td class="text-nowrap admin-action">
 		                    <button class="btn btn-pill btn-send admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
@@ -1217,35 +1350,37 @@ async def deliveries_page():
 	            return await res.json();
 	          }
 
-	          async function loadDeliveries(){
-	            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
-	            const params = new URLSearchParams();
-	            syncDateRangeFromDays();
-	            const client = (clientFilter.value || "").trim();
-	            const status = (statusFilter.value || "").trim();
-	            const tier = (tierFilter.value || "").trim();
-	            const createdFromISO = parseDateTimeLocalToISO(createdFromFilter.value);
-	            const createdToISO = parseDateTimeLocalToISO(createdToFilter.value);
-	            if (client) params.set("client", client);
-	            if (status) params.set("status", status);
-	            if (tier) params.set("tier", tier);
-	            if (createdFromISO) params.set("created_from", createdFromISO);
-	            if (createdToISO) params.set("created_to", createdToISO);
-	            writeFilterPrefs();
+		          async function loadDeliveries(){
+		            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
+		            const params = new URLSearchParams();
+		            syncDateRangeFromDays();
+		            const client = (clientFilter.value || "").trim();
+		            const selectedStatuses = getSelectedStatuses();
+		            const tier = (tierFilter.value || "").trim();
+		            const createdFromISO = parseDateTimeLocalToISO(createdFromFilter.value);
+		            const createdToISO = parseDateTimeLocalToISO(createdToFilter.value);
+		            if (client) params.set("client", client);
+		            if (selectedStatuses.length > 0 && selectedStatuses.length < STATUS_KEYS.length){
+		              params.set("status", selectedStatuses.join(","));
+		            }
+		            if (tier) params.set("tier", tier);
+		            if (createdFromISO) params.set("created_from", createdFromISO);
+		            if (createdToISO) params.set("created_to", createdToISO);
+		            writeFilterPrefs();
 
 	            let data;
 	            try {
 	              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
 	            } catch (_) {
 	              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
-	              return;
-	            }
+		              return;
+		            }
 
-	            rawItems = data.items || [];
-	            updateSortIndicators();
-	            renderRows(sortItems(rawItems));
-	            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-	          }
+		            rawItems = selectedStatuses.length === 0 ? [] : (data.items || []);
+		            updateSortIndicators();
+		            renderRows(sortItems(rawItems));
+		            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+		          }
 
 	          async function sendNow(id, tier){
 	            const rowKey = `${tier}-${id}`;
@@ -1314,15 +1449,15 @@ async def deliveries_page():
 	            btn.addEventListener("click", () => {
 	              const key = btn.dataset.sortKey;
 	              if (!key) return;
-	              if (activeSortKey === key){
-	                activeSortDir = activeSortDir === "asc" ? "desc" : "asc";
-	              } else {
-	                activeSortKey = key;
-	                activeSortDir = "asc";
-	              }
-	              updateSortIndicators();
-	              renderRows(sortItems(rawItems));
-	            });
+		              if (activeSortKey === key){
+		                activeSortDir = activeSortDir === "asc" ? "desc" : "asc";
+		              } else {
+		                activeSortKey = key;
+		                activeSortDir = key === "created_at" ? "desc" : "asc";
+		              }
+		              updateSortIndicators();
+		              renderRows(sortItems(rawItems));
+		            });
 	          }
 
 	          removeConfirmName.addEventListener("input", validateRemoveModalInput);
@@ -1337,15 +1472,26 @@ async def deliveries_page():
 	          window.deleteDelivery = deleteDelivery;
 	          window.openRemoveModal = openRemoveModal;
 
-	          refreshBtn.addEventListener("click", loadDeliveries);
-	          applyFilters.addEventListener("click", loadDeliveries);
-	          daysBackFilter.addEventListener("input", () => {
-	            syncDateRangeFromDays();
-	          });
+		          refreshBtn.addEventListener("click", loadDeliveries);
+		          applyFilters.addEventListener("click", loadDeliveries);
+		          daysBackFilter.addEventListener("input", () => {
+		            syncDateRangeFromDays();
+		          });
+		          statusSelectAllToggle.addEventListener("click", (event) => {
+		            event.preventDefault();
+		            const allSelected = getSelectedStatuses().length === statusCheckboxes.length;
+		            for (const checkbox of statusCheckboxes){
+		              checkbox.checked = !allSelected;
+		            }
+		            updateStatusFilterUI();
+		          });
+		          for (const checkbox of statusCheckboxes){
+		            checkbox.addEventListener("change", updateStatusFilterUI);
+		          }
 
-	          restoreFilterPrefs();
-	          renderFlashFromQuery();
-	          updateSortIndicators();
+		          restoreFilterPrefs();
+		          renderFlashFromQuery();
+		          updateSortIndicators();
 	          loadDeliveries();
 	        </script>
       </body>

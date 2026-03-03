@@ -26,3 +26,9 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "daysBackFilter" in resp.text
     assert "datetime-local" in resp.text
     assert "sort-trigger" in resp.text
+    assert "data-sort-key=\"created_at\"" in resp.text
+    assert "PENDING SEND" in resp.text
+    assert "value=\"COMPLETED_PENDING_SEND\"" in resp.text
+    assert "statusFilterButton" in resp.text
+    assert "statusSelectAllToggle" in resp.text
+    assert "Select All" in resp.text
