@@ -811,18 +811,55 @@ async def deliveries_page():
             border-color: var(--accent-600);
             color:#fff;
           }
-          .btn-send:hover{
+          .btn-send:hover,
+          .btn-send:focus,
+          .btn-send:focus-visible,
+          .btn-send:active{
+            background: var(--accent-600) !important;
+            border-color: var(--accent-600) !important;
+            color:#fff !important;
             filter: brightness(0.95);
-            color:#fff;
           }
           .btn-remove{
             background: #ef4444;
             border-color: #ef4444;
             color:#fff;
           }
-          .btn-remove:hover{
+          .btn-remove:hover,
+          .btn-remove:focus,
+          .btn-remove:focus-visible,
+          .btn-remove:active{
+            background: #ef4444 !important;
+            border-color: #ef4444 !important;
+            color:#fff !important;
             filter: brightness(0.95);
-            color:#fff;
+          }
+          .btn-send:disabled,
+          .btn-remove:disabled{
+            color: #fff !important;
+          }
+          .send-success-modal .modal-content{
+            border-radius: 12px;
+            border: 1px solid var(--line-soft);
+            box-shadow: var(--shadow);
+          }
+          .send-success-progress{
+            height: 8px;
+            background: var(--accent-050);
+            border-radius: 999px;
+            overflow: hidden;
+          }
+          .send-success-progress-bar{
+            height: 100%;
+            width: 0;
+            background: linear-gradient(90deg, var(--accent-500), var(--accent-600));
+          }
+          .send-success-progress-bar.is-running{
+            animation: send-success-progress 3s linear forwards;
+          }
+          @keyframes send-success-progress{
+            from { width: 0; }
+            to { width: 100%; }
           }
           .admin-action {
             display: none !important;
@@ -1028,6 +1065,19 @@ async def deliveries_page():
 	            </div>
 	          </div>
 	        </div>
+	        <div class="modal fade send-success-modal" id="sendSuccessModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="false" data-bs-keyboard="false">
+	          <div class="modal-dialog modal-sm modal-dialog-centered">
+	            <div class="modal-content">
+	              <div class="modal-body py-3">
+	                <div class="fw-semibold mb-1">Delivery submitted</div>
+	                <div class="text-muted small mb-3">Your send request was queued successfully.</div>
+	                <div class="send-success-progress" role="progressbar" aria-label="Send submission progress">
+	                  <div id="sendSuccessProgressBar" class="send-success-progress-bar"></div>
+	                </div>
+	              </div>
+	            </div>
+	          </div>
+	        </div>
 	        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 	        <script>
 	          const body = document.getElementById("deliveriesBody");
@@ -1046,6 +1096,8 @@ async def deliveries_page():
 	          const sortButtons = Array.from(document.querySelectorAll(".sort-trigger[data-sort-key]"));
 	          const flashMessage = document.getElementById("flashMessage");
 	          const removeModalEl = document.getElementById("removeDeliveryModal");
+	          const sendSuccessModalEl = document.getElementById("sendSuccessModal");
+	          const sendSuccessProgressBar = document.getElementById("sendSuccessProgressBar");
 	          const removeForm = document.getElementById("removeDeliveryForm");
 	          const removeDeliveryId = document.getElementById("removeDeliveryId");
 	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
@@ -1056,6 +1108,9 @@ async def deliveries_page():
 	          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
 	          const removeConfirmError = document.getElementById("removeConfirmError");
 	          const removeModal = new bootstrap.Modal(removeModalEl);
+	          const sendSuccessModal = sendSuccessModalEl
+	            ? new bootstrap.Modal(sendSuccessModalEl, {backdrop: false, keyboard: false})
+	            : null;
 	          const adminParams = new URLSearchParams(window.location.search);
 	          const isAdminActions = adminParams.get("adminActions") === "true" || adminParams.get("adminAction") === "true";
 		          const FILTER_COOKIE = "ui_deliveries_filters_v1";
@@ -1070,9 +1125,10 @@ async def deliveries_page():
 		            SENT: "SENT",
 		          };
 		          const STATUS_KEYS = Object.keys(STATUS_LABELS);
-		          let activeSortKey = null;
-		          let activeSortDir = "asc";
-		          let rawItems = [];
+	          let activeSortKey = null;
+	          let activeSortDir = "asc";
+	          let rawItems = [];
+	          let sendSuccessTimer = null;
 
 	          if (isAdminActions) {
 	            document.body.classList.add("admin-actions-enabled");
@@ -1284,6 +1340,23 @@ async def deliveries_page():
 		            window.history.replaceState({}, "", nextUrl);
 		          }
 
+		          function showSendSuccessModal(){
+		            if (!sendSuccessModal || !sendSuccessProgressBar) return;
+		            if (sendSuccessTimer){
+		              window.clearTimeout(sendSuccessTimer);
+		              sendSuccessTimer = null;
+		            }
+		            sendSuccessProgressBar.classList.remove("is-running");
+		            void sendSuccessProgressBar.offsetWidth;
+		            sendSuccessProgressBar.classList.add("is-running");
+		            sendSuccessModal.show();
+		            sendSuccessTimer = window.setTimeout(() => {
+		              sendSuccessModal.hide();
+		              sendSuccessProgressBar.classList.remove("is-running");
+		              sendSuccessTimer = null;
+		            }, 3000);
+		          }
+
 		          function applyTierStyling(){
 		            const table = document.querySelector(".table-modern");
 		            if(!table) return;
@@ -1384,7 +1457,7 @@ async def deliveries_page():
 		            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
 		          }
 
-	          async function sendNow(id, tier){
+		          async function sendNow(id, tier){
 	            const rowKey = `${tier}-${id}`;
 	            const input = document.getElementById(`delivery-url-${rowKey}`);
 	            const url = (input ? input.value : "").trim();
@@ -1393,18 +1466,19 @@ async def deliveries_page():
 	              return;
 	            }
 	            const qs = `?tier=${encodeURIComponent(tier)}`;
-	            try {
-	              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
-	                method: "POST",
-	                headers: {"Content-Type": "application/json"},
-	                body: JSON.stringify({override_target_url: url}),
-	              });
-	              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
-	              await loadDeliveries();
-	            } catch (_) {
-	              alert("Failed to send. Check server logs.");
-	            }
-	          }
+		            try {
+		              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
+		                method: "POST",
+		                headers: {"Content-Type": "application/json"},
+		                body: JSON.stringify({override_target_url: url}),
+		              });
+		              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
+		              showSendSuccessModal();
+		              await loadDeliveries();
+		            } catch (_) {
+		              alert("Failed to send. Check server logs.");
+		            }
+		          }
 
 	          async function deleteDelivery(id, tier){
 	            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
@@ -1447,7 +1521,7 @@ async def deliveries_page():
 	            removeModal.show();
 	          }
 
-	          for (const btn of sortButtons){
+		          for (const btn of sortButtons){
 	            btn.addEventListener("click", () => {
 	              const key = btn.dataset.sortKey;
 	              if (!key) return;
@@ -1462,8 +1536,19 @@ async def deliveries_page():
 		            });
 	          }
 
-	          removeConfirmName.addEventListener("input", validateRemoveModalInput);
-	          removeForm.addEventListener("submit", (event) => {
+		          removeConfirmName.addEventListener("input", validateRemoveModalInput);
+		          if (sendSuccessModalEl){
+		            sendSuccessModalEl.addEventListener("hidden.bs.modal", () => {
+		              if (sendSuccessTimer){
+		                window.clearTimeout(sendSuccessTimer);
+		                sendSuccessTimer = null;
+		              }
+		              if (sendSuccessProgressBar){
+		                sendSuccessProgressBar.classList.remove("is-running");
+		              }
+		            });
+		          }
+		          removeForm.addEventListener("submit", (event) => {
 	            if (removeConfirmName.value !== removeExpectedClientName.value){
 	              event.preventDefault();
 	              validateRemoveModalInput();

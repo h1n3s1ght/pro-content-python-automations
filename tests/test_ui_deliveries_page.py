@@ -32,3 +32,4 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "statusFilterButton" in resp.text
     assert "statusSelectAllToggle" in resp.text
     assert "Select All" in resp.text
+    assert "Delivery submitted" in resp.text
