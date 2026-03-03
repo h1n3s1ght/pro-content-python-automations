@@ -23,5 +23,6 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "adminActions" in resp.text
     assert "admin-actions-enabled" in resp.text
     assert "All tiers" in resp.text
+    assert "daysBackFilter" in resp.text
     assert "datetime-local" in resp.text
     assert "sort-trigger" in resp.text

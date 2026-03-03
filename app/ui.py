@@ -671,6 +671,9 @@ async def deliveries_page():
 	              </select>
 	            </div>
 	            <div class="col-sm-2">
+	              <input id="daysBackFilter" type="number" min="1" step="1" class="form-control form-control-sm" placeholder="Days back" />
+	            </div>
+	            <div class="col-sm-2">
 	              <input id="createdFromFilter" type="datetime-local" class="form-control form-control-sm" />
 	            </div>
 	            <div class="col-sm-2">
@@ -744,6 +747,7 @@ async def deliveries_page():
 	          const clientFilter = document.getElementById("clientFilter");
 	          const statusFilter = document.getElementById("statusFilter");
 	          const tierFilter = document.getElementById("tierFilter");
+	          const daysBackFilter = document.getElementById("daysBackFilter");
 	          const createdFromFilter = document.getElementById("createdFromFilter");
 	          const createdToFilter = document.getElementById("createdToFilter");
 	          const applyFilters = document.getElementById("applyFilters");
@@ -804,11 +808,27 @@ async def deliveries_page():
 
 	          function defaultDateRange(){
 	            const now = new Date();
-	            const from = new Date(now.getTime() - (60 * 24 * 60 * 60 * 1000));
+	            const defaultDays = 60;
+	            const from = new Date(now.getTime() - (defaultDays * 24 * 60 * 60 * 1000));
 	            return {
+	              days_back: String(defaultDays),
 	              created_from: toDateTimeLocalValue(from),
-	              created_to: toDateTimeLocalValue(now),
 	            };
+	          }
+
+	          function parseDaysBack(value){
+	            const n = Number.parseInt(String(value || "").trim(), 10);
+	            return Number.isFinite(n) && n > 0 ? n : null;
+	          }
+
+	          function syncDateRangeFromDays(){
+	            const now = new Date();
+	            createdToFilter.value = toDateTimeLocalValue(now);
+	            const days = parseDaysBack(daysBackFilter.value);
+	            if (days === null) return null;
+	            const from = new Date(now.getTime() - (days * 24 * 60 * 60 * 1000));
+	            createdFromFilter.value = toDateTimeLocalValue(from);
+	            return days;
 	          }
 
 	          function getCookieValue(name){
@@ -838,8 +858,8 @@ async def deliveries_page():
 	              client: (clientFilter.value || "").trim(),
 	              status: (statusFilter.value || "").trim(),
 	              tier: (tierFilter.value || "").trim(),
+	              days_back: (daysBackFilter.value || "").trim(),
 	              created_from: (createdFromFilter.value || "").trim(),
-	              created_to: (createdToFilter.value || "").trim(),
 	            };
 	            document.cookie = `${FILTER_COOKIE}=${encodeURIComponent(JSON.stringify(payload))}; Max-Age=${FILTER_COOKIE_MAX_AGE}; Path=/; SameSite=Lax`;
 	          }
@@ -850,12 +870,20 @@ async def deliveries_page():
 	            clientFilter.value = saved?.client || "";
 	            statusFilter.value = saved?.status || "";
 	            tierFilter.value = saved?.tier || "";
-	            createdFromFilter.value = saved?.created_from || defaults.created_from;
-	            createdToFilter.value = saved?.created_to || defaults.created_to;
+	            daysBackFilter.value = saved?.days_back || defaults.days_back;
+	            const days = syncDateRangeFromDays();
+	            if (days === null){
+	              createdFromFilter.value = saved?.created_from || defaults.created_from;
+	              createdToFilter.value = toDateTimeLocalValue(new Date());
+	            }
 	          }
 
 	          function normalizeSortValue(item, key){
-	            return String(item?.[key] || "").toLocaleLowerCase();
+	            const raw = String(item?.[key] || "").trim().toLocaleLowerCase();
+	            if (key === "client_name"){
+	              return raw.replace(/^the\\s+/i, "");
+	            }
+	            return raw;
 	          }
 
 	          function sortItems(items){
@@ -926,7 +954,7 @@ async def deliveries_page():
 	                  <td>${item.status || ""}</td>
 	                  <td class="text-muted small">${formatDate(item.created_at)}</td>
 	                  <td class="admin-action">
-	                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm admin-action" placeholder="${placeholder}" value="${urlValue}" />
+	                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm" placeholder="${placeholder}" value="${urlValue}" />
 	                  </td>
 	                  <td class="text-nowrap admin-action">
 	                    <button class="btn btn-sm btn-primary admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
@@ -947,6 +975,7 @@ async def deliveries_page():
 	          async function loadDeliveries(){
 	            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
 	            const params = new URLSearchParams();
+	            syncDateRangeFromDays();
 	            const client = (clientFilter.value || "").trim();
 	            const status = (statusFilter.value || "").trim();
 	            const tier = (tierFilter.value || "").trim();
@@ -1065,6 +1094,9 @@ async def deliveries_page():
 
 	          refreshBtn.addEventListener("click", loadDeliveries);
 	          applyFilters.addEventListener("click", loadDeliveries);
+	          daysBackFilter.addEventListener("input", () => {
+	            syncDateRangeFromDays();
+	          });
 
 	          restoreFilterPrefs();
 	          renderFlashFromQuery();
