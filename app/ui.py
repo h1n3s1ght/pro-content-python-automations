@@ -333,12 +333,19 @@ def _update_override_url(session: Session, delivery_id: UUID, override_target_ur
         raise HTTPException(status_code=404, detail="delivery not found")
 
 
-def _deliveries_redirect(*, flash_success: str | None = None, flash_error: str | None = None) -> RedirectResponse:
+def _deliveries_redirect(
+    *,
+    flash_success: str | None = None,
+    flash_error: str | None = None,
+    admin_actions: bool = False,
+) -> RedirectResponse:
     params = {}
     if flash_success:
         params["flash_success"] = flash_success
     if flash_error:
         params["flash_error"] = flash_error
+    if admin_actions:
+        params["adminActions"] = "true"
 
     url = "/ui/deliveries"
     if params:
@@ -509,25 +516,36 @@ def remove_delivery(
     delivery_id: UUID = Form(...),
     tier: str = Form(default="pro"),
     confirm_name: str = Form(...),
+    admin_actions: str = Form(default="false"),
     session: Session = Depends(get_db_session),
 ):
     tier_name = normalize_delivery_tier(tier)
     table_name = delivery_outbox_table_name_for_tier(tier_name)
+    keep_admin_actions = admin_actions == "true"
 
     try:
         row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
     except HTTPException:
-        return _deliveries_redirect(flash_error="Delivery not found. Nothing was removed.")
+        return _deliveries_redirect(
+            flash_error="Delivery not found. Nothing was removed.",
+            admin_actions=keep_admin_actions,
+        )
 
     client_name = str(row.get("client_name") or "")
     if confirm_name != client_name:
-        return _deliveries_redirect(flash_error="Confirmation text did not match exactly. Delivery was not removed.")
+        return _deliveries_redirect(
+            flash_error="Confirmation text did not match exactly. Delivery was not removed.",
+            admin_actions=keep_admin_actions,
+        )
 
     try:
         result = session.execute(text(f"DELETE FROM {table_name} WHERE id = :delivery_id"), {"delivery_id": delivery_id})
         if result.rowcount == 0:
             session.rollback()
-            return _deliveries_redirect(flash_error="Delivery not found. Nothing was removed.")
+            return _deliveries_redirect(
+                flash_error="Delivery not found. Nothing was removed.",
+                admin_actions=keep_admin_actions,
+            )
         session.commit()
     except Exception as exc:
         session.rollback()
@@ -538,9 +556,15 @@ def remove_delivery(
             client_name,
             exc,
         )
-        return _deliveries_redirect(flash_error="Failed to remove delivery due to a database error.")
+        return _deliveries_redirect(
+            flash_error="Failed to remove delivery due to a database error.",
+            admin_actions=keep_admin_actions,
+        )
 
-    return _deliveries_redirect(flash_success=f"Removed delivery for {client_name}.")
+    return _deliveries_redirect(
+        flash_success=f"Removed delivery for {client_name}.",
+        admin_actions=keep_admin_actions,
+    )
 
 
 @router.get("/deliveries", response_class=HTMLResponse)
@@ -628,13 +652,14 @@ async def deliveries_page():
 	                <h5 class="modal-title" id="removeDeliveryModalTitle">Remove Delivery</h5>
 	                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
 	              </div>
-	              <form id="removeDeliveryForm" method="POST" action="/ui/deliveries/remove">
-	                <div class="modal-body">
-	                  <p class="mb-2">Are you sure you wish to remove this?</p>
-	                  <p class="mb-3">Client: <strong id="removeDeliveryClientName"></strong></p>
-	                  <input type="hidden" name="delivery_id" id="removeDeliveryId" />
-	                  <input type="hidden" name="tier" id="removeDeliveryTier" />
-	                  <input type="hidden" id="removeExpectedClientName" />
+		              <form id="removeDeliveryForm" method="POST" action="/ui/deliveries/remove">
+		                <div class="modal-body">
+		                  <p class="mb-2">Are you sure you wish to remove this?</p>
+		                  <p class="mb-3">Client: <strong id="removeDeliveryClientName"></strong></p>
+		                  <input type="hidden" name="delivery_id" id="removeDeliveryId" />
+		                  <input type="hidden" name="tier" id="removeDeliveryTier" />
+		                  <input type="hidden" name="admin_actions" id="removeDeliveryAdminActions" value="false" />
+		                  <input type="hidden" id="removeExpectedClientName" />
 	                  <div class="mb-3">
 	                    <label class="form-label" for="removeConfirmName">Type the client name to confirm</label>
 	                    <input type="text" class="form-control" name="confirm_name" id="removeConfirmName" autocomplete="off" required />
@@ -660,11 +685,12 @@ async def deliveries_page():
 	          const flashMessage = document.getElementById("flashMessage");
 	          const removeModalEl = document.getElementById("removeDeliveryModal");
 	          const removeForm = document.getElementById("removeDeliveryForm");
-	          const removeDeliveryId = document.getElementById("removeDeliveryId");
-	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
-	          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
-	          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
-	          const removeConfirmName = document.getElementById("removeConfirmName");
+		          const removeDeliveryId = document.getElementById("removeDeliveryId");
+		          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
+		          const removeDeliveryAdminActions = document.getElementById("removeDeliveryAdminActions");
+		          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
+		          const removeDeliveryClientName = document.getElementById("removeDeliveryClientName");
+		          const removeConfirmName = document.getElementById("removeConfirmName");
 		          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
 		          const removeConfirmError = document.getElementById("removeConfirmError");
 		          const removeModal = new bootstrap.Modal(removeModalEl);
@@ -673,6 +699,7 @@ async def deliveries_page():
 		          if (isAdminActions) {
 		            document.body.classList.add("admin-actions-enabled");
 		          }
+		          removeDeliveryAdminActions.value = isAdminActions ? "true" : "false";
 
 	          function escapeHtml(value){
 	            return String(value || "")
@@ -844,6 +871,9 @@ async def deliveries_page():
 	              validateRemoveModalInput();
 	            }
 	          });
+	          window.sendNow = sendNow;
+	          window.deleteDelivery = deleteDelivery;
+	          window.openRemoveModal = openRemoveModal;
 
 	          refreshBtn.addEventListener("click", loadDeliveries);
 	          applyFilters.addEventListener("click", loadDeliveries);
