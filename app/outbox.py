@@ -5,7 +5,7 @@ import re
 import uuid
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlparse
 
 from sqlalchemy import func, update, text
@@ -314,8 +314,28 @@ def _returning_expr(column: str, available: set[str], *, fallback_sql: str) -> s
     return f"{fallback_sql} AS {column}"
 
 
-def claim_delivery(delivery_id: Any) -> Optional[Dict[str, Any]]:
+def _normalized_statuses(
+    statuses: Sequence[str] | None,
+    *,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    if statuses is None:
+        return default
+    unique = []
+    for status in statuses:
+        value = _clean_str(status).upper()
+        if value and value not in unique:
+            unique.append(value)
+    return tuple(unique) or default
+
+
+def claim_delivery(
+    delivery_id: Any,
+    *,
+    allowed_statuses: Sequence[str] | None = None,
+) -> Optional[Dict[str, Any]]:
     delivery_uuid = _normalize_uuid(delivery_id)
+    claim_statuses = _normalized_statuses(allowed_statuses, default=READY_STATUSES)
     session_factory = get_sessionmaker()
     session = session_factory()
     try:
@@ -323,7 +343,7 @@ def claim_delivery(delivery_id: Any) -> Optional[Dict[str, Any]]:
             update(DeliveryOutbox)
             .where(
                 DeliveryOutbox.id == delivery_uuid,
-                DeliveryOutbox.status.in_(READY_STATUSES),
+                DeliveryOutbox.status.in_(claim_statuses),
             )
             .values(
                 status="SENDING",
@@ -403,9 +423,15 @@ def mark_delivery_failed(delivery_id: Any, error_message: Any) -> bool:
         session.close()
 
 
-def claim_delivery_for_tier(delivery_id: Any, *, tier: str | None = None) -> Optional[Dict[str, Any]]:
+def claim_delivery_for_tier(
+    delivery_id: Any,
+    *,
+    tier: str | None = None,
+    allowed_statuses: Sequence[str] | None = None,
+) -> Optional[Dict[str, Any]]:
     table_name = delivery_outbox_table_name_for_tier(tier)
     delivery_uuid = _normalize_uuid(delivery_id)
+    claim_statuses = _normalized_statuses(allowed_statuses, default=READY_STATUSES)
     session_factory = get_sessionmaker()
     session = session_factory()
     try:
@@ -421,7 +447,7 @@ def claim_delivery_for_tier(delivery_id: Any, *, tier: str | None = None) -> Opt
         if "updated_at" in columns:
             set_clauses.append("updated_at = NOW()")
 
-        statuses = ", ".join(f"'{st}'" for st in READY_STATUSES)
+        statuses = ", ".join(f"'{st}'" for st in claim_statuses)
         returning = [
             _returning_expr("id", columns, fallback_sql="'00000000-0000-0000-0000-000000000000'::uuid"),
             _returning_expr("job_id", columns, fallback_sql="''"),

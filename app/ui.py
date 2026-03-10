@@ -26,7 +26,7 @@ from .storage import (
     resume_job,
 )
 from .copy_store import SOFT_DELETE_HOURS_DEFAULT, soft_delete_job_copy
-from .outbox import delivery_outbox_table_name_for_tier, normalize_delivery_tier
+from .outbox import READY_STATUSES, delivery_outbox_table_name_for_tier, normalize_delivery_tier
 from .tasks import finalize_deleted_job_copy, purge_local_payload, run_resume_job, send_delivery
 from .s3_upload import head_object_info
 
@@ -256,6 +256,7 @@ _DELIVERY_TIME_DEFAULTS = {
     "created_at": "NOW()",
     "updated_at": "NOW()",
 }
+_REPLAY_SEND_STATUSES = ("FAILED", "SENT")
 
 
 def _website_tier_label(tier: str) -> str:
@@ -352,6 +353,10 @@ def _deliveries_redirect(
     if params:
         url = f"{url}?{urlencode(params)}"
     return RedirectResponse(url=url, status_code=303)
+
+
+def _allowed_send_statuses(*, replay: bool) -> tuple[str, ...]:
+    return _REPLAY_SEND_STATUSES if replay else READY_STATUSES
 
 
 @router.get("/api/deliveries", response_model=DeliveryListResponse)
@@ -467,11 +472,22 @@ def set_override_url(
 def send_now(
     delivery_id: UUID,
     tier: str | None = Query(default=None),
+    replay: bool = Query(default=False),
     session: Session = Depends(get_db_session),
 ):
     tier_name = normalize_delivery_tier(tier)
-    _fetch_delivery_row(session, delivery_id, tier=tier_name)
-    async_result = send_delivery.delay(str(delivery_id), tier_name)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    current_status = str(row.get("status") or "").strip().upper()
+    allowed_statuses = _allowed_send_statuses(replay=replay)
+    if current_status not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"delivery status '{current_status or 'UNKNOWN'}' cannot be sent "
+                f"with replay={str(bool(replay)).lower()}"
+            ),
+        )
+    async_result = send_delivery.delay(str(delivery_id), tier_name, bool(replay))
     return SendNowResponse(ok=True, task_id=async_result.id)
 
 
@@ -1065,6 +1081,35 @@ async def deliveries_page():
 	            </div>
 	          </div>
 	        </div>
+	        <div class="modal fade" id="resendDeliveryModal" tabindex="-1" aria-labelledby="resendDeliveryModalTitle" aria-hidden="true">
+	          <div class="modal-dialog modal-dialog-centered">
+	            <div class="modal-content">
+	              <div class="modal-header">
+	                <h5 class="modal-title" id="resendDeliveryModalTitle">Re-send Delivery</h5>
+	                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+	              </div>
+	              <form id="resendDeliveryForm">
+	                <div class="modal-body">
+	                  <p class="mb-2">Are you sure you wish to re-send this delivery?</p>
+	                  <p class="mb-2">Client: <strong id="resendDeliveryClientName"></strong></p>
+	                  <p class="mb-3">URL: <code id="resendDeliveryUrl"></code></p>
+	                  <input type="hidden" id="resendDeliveryId" />
+	                  <input type="hidden" id="resendDeliveryTier" />
+	                  <input type="hidden" id="resendExpectedClientName" />
+	                  <div class="mb-3">
+	                    <label class="form-label" for="resendConfirmName">Type the client name to confirm</label>
+	                    <input type="text" class="form-control" id="resendConfirmName" autocomplete="off" required />
+	                  </div>
+	                  <div id="resendConfirmError" class="alert alert-danger py-2 mb-0 d-none"></div>
+	                </div>
+	                <div class="modal-footer">
+	                  <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel Action</button>
+	                  <button type="submit" class="btn btn-primary" id="resendConfirmBtn" disabled>Re-send</button>
+	                </div>
+	              </form>
+	            </div>
+	          </div>
+	        </div>
 	        <div class="modal fade send-success-modal" id="sendSuccessModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="false" data-bs-keyboard="false">
 	          <div class="modal-dialog modal-sm modal-dialog-centered">
 	            <div class="modal-content">
@@ -1096,9 +1141,11 @@ async def deliveries_page():
 	          const sortButtons = Array.from(document.querySelectorAll(".sort-trigger[data-sort-key]"));
 	          const flashMessage = document.getElementById("flashMessage");
 	          const removeModalEl = document.getElementById("removeDeliveryModal");
+	          const resendModalEl = document.getElementById("resendDeliveryModal");
 	          const sendSuccessModalEl = document.getElementById("sendSuccessModal");
 	          const sendSuccessProgressBar = document.getElementById("sendSuccessProgressBar");
 	          const removeForm = document.getElementById("removeDeliveryForm");
+	          const resendForm = document.getElementById("resendDeliveryForm");
 	          const removeDeliveryId = document.getElementById("removeDeliveryId");
 	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
 	          const removeDeliveryAdminActions = document.getElementById("removeDeliveryAdminActions");
@@ -1107,7 +1154,16 @@ async def deliveries_page():
 	          const removeConfirmName = document.getElementById("removeConfirmName");
 	          const removeConfirmBtn = document.getElementById("removeConfirmBtn");
 	          const removeConfirmError = document.getElementById("removeConfirmError");
+	          const resendDeliveryId = document.getElementById("resendDeliveryId");
+	          const resendDeliveryTier = document.getElementById("resendDeliveryTier");
+	          const resendExpectedClientName = document.getElementById("resendExpectedClientName");
+	          const resendDeliveryClientName = document.getElementById("resendDeliveryClientName");
+	          const resendDeliveryUrl = document.getElementById("resendDeliveryUrl");
+	          const resendConfirmName = document.getElementById("resendConfirmName");
+	          const resendConfirmBtn = document.getElementById("resendConfirmBtn");
+	          const resendConfirmError = document.getElementById("resendConfirmError");
 	          const removeModal = new bootstrap.Modal(removeModalEl);
+	          const resendModal = resendModalEl ? new bootstrap.Modal(resendModalEl) : null;
 	          const sendSuccessModal = sendSuccessModalEl
 	            ? new bootstrap.Modal(sendSuccessModalEl, {backdrop: false, keyboard: false})
 	            : null;
@@ -1125,6 +1181,8 @@ async def deliveries_page():
 		            SENT: "SENT",
 		          };
 		          const STATUS_KEYS = Object.keys(STATUS_LABELS);
+	          const SENDABLE_STATUSES = new Set(["COMPLETED_PENDING_SEND", "READY", "READY_TO_SEND"]);
+	          const RESENDABLE_STATUSES = new Set(["FAILED", "SENT"]);
 	          let activeSortKey = null;
 	          let activeSortDir = "asc";
 	          let rawItems = [];
@@ -1391,10 +1449,18 @@ async def deliveries_page():
 	            body.innerHTML = items.map(item => {
 	              const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
 	              const rowKey = `${tier}-${item.id}`;
+	              const statusKey = String(item.status || "").trim().toUpperCase();
 	              const encodedClientName = encodeURIComponent(item.client_name || "").replace(/'/g, "%27");
 	              const urlValue = item.override_target_url || "";
 	              const placeholder = item.default_target_url || "";
-	              const canDelete = String(item.status || "").toUpperCase() === "FAILED";
+	              const canDelete = statusKey === "FAILED";
+	              const canSend = SENDABLE_STATUSES.has(statusKey);
+	              const canResend = RESENDABLE_STATUSES.has(statusKey);
+	              const sendBtn = canSend
+	                ? `<button class="btn btn-pill btn-send admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>`
+	                : canResend
+	                  ? `<button class="btn btn-pill btn-send admin-action" onclick="openResendModal('${item.id}', '${tier}', '${encodedClientName}')">Re-send</button>`
+	                  : `<button class="btn btn-pill btn-outline-secondary admin-action" disabled title="Send unavailable while status is ${escapeHtml(formatStatusLabel(statusKey))}.">Send</button>`;
 	              const deleteBtn = canDelete
 	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
 	                : ``;
@@ -1409,7 +1475,7 @@ async def deliveries_page():
 			                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm url-input" placeholder="${placeholder}" value="${urlValue}" />
 		                  </td>
 		                  <td class="text-nowrap admin-action">
-		                    <button class="btn btn-pill btn-send admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>
+		                    ${sendBtn}
 		                    ${deleteBtn}
 		                    ${removeBtn}
 		                  </td>
@@ -1457,27 +1523,49 @@ async def deliveries_page():
 		            lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
 		          }
 
-		          async function sendNow(id, tier){
+	          function getDeliveryUrlInput(id, tier){
 	            const rowKey = `${tier}-${id}`;
-	            const input = document.getElementById(`delivery-url-${rowKey}`);
-	            const url = (input ? input.value : "").trim();
+	            return document.getElementById(`delivery-url-${rowKey}`);
+	          }
+
+	          function getDeliveryUrlValue(id, tier){
+	            const input = getDeliveryUrlInput(id, tier);
+	            return (input ? input.value : "").trim();
+	          }
+
+		          async function queueDelivery(id, tier, options = {}){
+	            const replay = Boolean(options && options.replay);
+	            const url = getDeliveryUrlValue(id, tier);
 	            if (!url){
 	              alert("Please enter a Delivery URL first.");
-	              return;
+	              return false;
 	            }
-	            const qs = `?tier=${encodeURIComponent(tier)}`;
+	            const overrideParams = new URLSearchParams();
+	            overrideParams.set("tier", tier);
+	            const overrideQs = `?${overrideParams.toString()}`;
+	            const sendParams = new URLSearchParams(overrideParams);
+	            if (replay){
+	              sendParams.set("replay", "1");
+	            }
+	            const sendQs = `?${sendParams.toString()}`;
 		            try {
-		              await apiJSON(`/ui/deliveries/${id}/override-url${qs}`, {
+		              await apiJSON(`/ui/deliveries/${id}/override-url${overrideQs}`, {
 		                method: "POST",
 		                headers: {"Content-Type": "application/json"},
 		                body: JSON.stringify({override_target_url: url}),
 		              });
-		              await apiJSON(`/ui/deliveries/${id}/send-now${qs}`, { method: "POST" });
+		              await apiJSON(`/ui/deliveries/${id}/send-now${sendQs}`, { method: "POST" });
 		              showSendSuccessModal();
 		              await loadDeliveries();
+		              return true;
 		            } catch (_) {
 		              alert("Failed to send. Check server logs.");
+		              return false;
 		            }
+		          }
+
+		          async function sendNow(id, tier){
+		            await queueDelivery(id, tier, {replay: false});
 		          }
 
 	          async function deleteDelivery(id, tier){
@@ -1521,6 +1609,36 @@ async def deliveries_page():
 	            removeModal.show();
 	          }
 
+	          function validateResendModalInput(){
+	            const expected = resendExpectedClientName.value || "";
+	            const typed = resendConfirmName.value || "";
+	            const matches = typed === expected;
+	            resendConfirmBtn.disabled = !matches;
+	            if (typed && !matches){
+	              resendConfirmError.textContent = "Typed client name must exactly match.";
+	              resendConfirmError.classList.remove("d-none");
+	            } else {
+	              resendConfirmError.classList.add("d-none");
+	              resendConfirmError.textContent = "";
+	            }
+	          }
+
+	          function openResendModal(id, tier, encodedClientName){
+	            if (!resendModal) return;
+	            const clientName = decodeURIComponent(encodedClientName || "");
+	            const url = getDeliveryUrlValue(id, tier);
+	            resendDeliveryId.value = id;
+	            resendDeliveryTier.value = tier;
+	            resendExpectedClientName.value = clientName;
+	            resendDeliveryClientName.textContent = clientName;
+	            resendDeliveryUrl.textContent = url || "(empty)";
+	            resendConfirmName.value = "";
+	            resendConfirmBtn.disabled = true;
+	            resendConfirmError.classList.add("d-none");
+	            resendConfirmError.textContent = "";
+	            resendModal.show();
+	          }
+
 		          for (const btn of sortButtons){
 	            btn.addEventListener("click", () => {
 	              const key = btn.dataset.sortKey;
@@ -1537,6 +1655,7 @@ async def deliveries_page():
 	          }
 
 		          removeConfirmName.addEventListener("input", validateRemoveModalInput);
+		          resendConfirmName.addEventListener("input", validateResendModalInput);
 		          if (sendSuccessModalEl){
 		            sendSuccessModalEl.addEventListener("hidden.bs.modal", () => {
 		              if (sendSuccessTimer){
@@ -1554,10 +1673,36 @@ async def deliveries_page():
 	              validateRemoveModalInput();
 	            }
 	          });
+	          if (resendModalEl){
+	            resendModalEl.addEventListener("hidden.bs.modal", () => {
+	              resendConfirmName.value = "";
+	              resendConfirmBtn.disabled = true;
+	              resendConfirmError.classList.add("d-none");
+	              resendConfirmError.textContent = "";
+	            });
+	          }
+	          resendForm.addEventListener("submit", async (event) => {
+	            event.preventDefault();
+	            if (resendConfirmName.value !== resendExpectedClientName.value){
+	              validateResendModalInput();
+	              return;
+	            }
+	            const id = resendDeliveryId.value;
+	            const tier = resendDeliveryTier.value || "pro";
+	            resendDeliveryUrl.textContent = getDeliveryUrlValue(id, tier) || "(empty)";
+	            resendConfirmBtn.disabled = true;
+	            const sent = await queueDelivery(id, tier, {replay: true});
+	            if (sent && resendModal){
+	              resendModal.hide();
+	            } else {
+	              validateResendModalInput();
+	            }
+	          });
 
 	          window.sendNow = sendNow;
 	          window.deleteDelivery = deleteDelivery;
 	          window.openRemoveModal = openRemoveModal;
+	          window.openResendModal = openResendModal;
 
 		          refreshBtn.addEventListener("click", loadDeliveries);
 		          applyFilters.addEventListener("click", loadDeliveries);

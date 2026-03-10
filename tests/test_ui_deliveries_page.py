@@ -33,3 +33,8 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "statusSelectAllToggle" in resp.text
     assert "Select All" in resp.text
     assert "Delivery submitted" in resp.text
+    assert "Re-send Delivery" in resp.text
+    assert "id=\"resendDeliveryModal\"" in resp.text
+    assert "resendConfirmName" in resp.text
+    assert "openResendModal" in resp.text
+    assert "Re-send" in resp.text

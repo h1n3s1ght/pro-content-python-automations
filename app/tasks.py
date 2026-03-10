@@ -12,6 +12,7 @@ from .celery_app import celery_app
 from .errors import OperationCanceled, PauseRequested
 from .logging_utils import log_info, log_warn, log_error
 from .outbox import (
+    READY_STATUSES,
     claim_delivery,
     claim_delivery_for_tier,
     claim_site_check,
@@ -256,11 +257,14 @@ def _build_zapier_payload(row: dict, target_url: str, content: dict) -> dict:
     bind=True,
     autoretry_for=(),
 )
-def send_delivery(self, delivery_id: str, tier: str = "pro"):
+def send_delivery(self, delivery_id: str, tier: str = "pro", replay: bool = False):
     tier_name = normalize_delivery_tier(tier)
+    replay_requested = bool(replay)
+    claim_statuses = READY_STATUSES if not replay_requested else (*READY_STATUSES, "SENT")
+
     if tier_name == "express":
         def claim_fn(did: str):
-            return claim_delivery_for_tier(did, tier=tier_name)
+            return claim_delivery_for_tier(did, tier=tier_name, allowed_statuses=claim_statuses)
 
         def mark_failed_fn(did: str, err: str):
             return mark_delivery_failed_for_tier(did, err, tier=tier_name)
@@ -268,18 +272,25 @@ def send_delivery(self, delivery_id: str, tier: str = "pro"):
         def mark_sent_fn(did: str):
             return mark_delivery_sent_for_tier(did, tier=tier_name)
     else:
-        claim_fn = claim_delivery
+        def claim_fn(did: str):
+            return claim_delivery(did, allowed_statuses=claim_statuses)
         mark_failed_fn = mark_delivery_failed
         mark_sent_fn = mark_delivery_sent
 
     try:
         row = claim_fn(delivery_id)
     except Exception as exc:
-        logger.exception("send_delivery_claim_failed delivery_id=%s tier=%s err=%s", delivery_id, tier_name, exc)
+        logger.exception(
+            "send_delivery_claim_failed delivery_id=%s tier=%s replay=%s err=%s",
+            delivery_id,
+            tier_name,
+            replay_requested,
+            exc,
+        )
         raise
 
     if not row:
-        logger.info("send_delivery_noop delivery_id=%s tier=%s", delivery_id, tier_name)
+        logger.info("send_delivery_noop delivery_id=%s tier=%s replay=%s", delivery_id, tier_name, replay_requested)
         return
 
     mode = DELIVERY_MODE
