@@ -836,6 +836,20 @@ async def deliveries_page():
             color:#fff !important;
             filter: brightness(0.95);
           }
+          .btn-resend{
+            background: #e8dcc0;
+            border-color: #d6c5a1;
+            color: #4f3d1e;
+          }
+          .btn-resend:hover,
+          .btn-resend:focus,
+          .btn-resend:focus-visible,
+          .btn-resend:active{
+            background: #e0d2b3 !important;
+            border-color: #cdb98f !important;
+            color: #4f3d1e !important;
+            filter: none;
+          }
           .btn-remove{
             background: #ef4444;
             border-color: #ef4444;
@@ -1459,7 +1473,7 @@ async def deliveries_page():
 	              const sendBtn = canSend
 	                ? `<button class="btn btn-pill btn-send admin-action" onclick="sendNow('${item.id}', '${tier}')">Send</button>`
 	                : canResend
-	                  ? `<button class="btn btn-pill btn-send admin-action" onclick="openResendModal('${item.id}', '${tier}', '${encodedClientName}')">Re-send</button>`
+	                  ? `<button class="btn btn-pill btn-resend admin-action" onclick="openResendModal('${item.id}', '${tier}', '${encodedClientName}')">Re-send</button>`
 	                  : `<button class="btn btn-pill btn-outline-secondary admin-action" disabled title="Send unavailable while status is ${escapeHtml(formatStatusLabel(statusKey))}.">Send</button>`;
 	              const deleteBtn = canDelete
 	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
