@@ -165,6 +165,79 @@ def _unpack_list_result(value: Any) -> tuple[list[dict], str]:
     return [], ""
 
 
+def _compact_error(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text)
+
+
+def _find_latest_client_form_payload_internal(
+    *,
+    client_name: str,
+    bucket: str | None = None,
+    prefix: str | None = None,
+    max_scan: int | None = None,
+) -> tuple[tuple[str, Dict[str, Any]] | None, str]:
+    name = str(client_name or "").strip()
+    if not name:
+        return None, "missing_client_name"
+
+    bucket_name = str(bucket or S3_CLIENT_FORM_BUCKET).strip() or S3_CLIENT_FORM_BUCKET
+    prefix_root = _client_form_prefix(str(prefix or S3_CLIENT_FORM_PREFIX))
+    safe_name = _safe_client_form_name(name)
+    signature = _name_signature(name)
+    scan_limit = int(max_scan or S3_CLIENT_FORM_SCAN_LIMIT)
+    if scan_limit < 1:
+        scan_limit = 1
+
+    # Fast-path: exact prefix in expected filename format.
+    exact_prefix = f"{prefix_root}{safe_name}_"
+    fast_items_raw = _list_keys_for_prefix(bucket=bucket_name, prefix=exact_prefix, limit=scan_limit)
+    fast_items, fast_err = _unpack_list_result(fast_items_raw)
+    latest = _pick_latest_client_form_object(fast_items)
+
+    # Fallback: broader scan with name-signature matching.
+    broad_items: list[dict] = []
+    broad_err = ""
+    if latest is None:
+        broad_items_raw = _list_keys_for_prefix(bucket=bucket_name, prefix=prefix_root, limit=scan_limit)
+        broad_items, broad_err = _unpack_list_result(broad_items_raw)
+        latest = _pick_latest_client_form_object(broad_items, expected_signature=signature)
+
+    if latest is None:
+        diagnostics = (
+            f"client_name={name!r} safe_name={safe_name!r} bucket={bucket_name!r} "
+            f"exact_prefix={exact_prefix!r} exact_items={len(fast_items)} exact_err={_compact_error(fast_err)!r} "
+            f"broad_prefix={prefix_root!r} broad_items={len(broad_items)} broad_err={_compact_error(broad_err)!r}"
+        )
+        logger.warning(
+            "s3_client_form_no_match %s",
+            diagnostics,
+        )
+        return None, diagnostics
+
+    key = str(latest.get("Key") or "").strip()
+    if not key:
+        return None, "empty_s3_key"
+
+    payload = download_json(key, bucket=bucket_name)
+    if not isinstance(payload, dict):
+        diagnostics = f"client_name={name!r} bucket={bucket_name!r} key={key!r}"
+        logger.warning(
+            "s3_client_form_payload_download_failed %s",
+            diagnostics,
+        )
+        return None, diagnostics
+    logger.info(
+        "s3_client_form_match client_name=%s bucket=%s key=%s",
+        name,
+        bucket_name,
+        key,
+    )
+    return (key, payload), f"client_name={name!r} bucket={bucket_name!r} key={key!r}"
+
+
 def datetime_cst_stamp(dt: Optional[datetime] = None) -> str:
     if dt is None:
         dt = datetime.now(tz=_CST)
@@ -280,77 +353,41 @@ def find_latest_client_form_payload(
     Find newest client form payload from S3 by client-name prefix and return:
       (key, payload_dict)
     """
-    name = str(client_name or "").strip()
-    if not name:
-        return None
-
-    bucket_name = str(bucket or S3_CLIENT_FORM_BUCKET).strip() or S3_CLIENT_FORM_BUCKET
-    prefix_root = _client_form_prefix(str(prefix or S3_CLIENT_FORM_PREFIX))
-    safe_name = _safe_client_form_name(name)
-    signature = _name_signature(name)
-    scan_limit = int(max_scan or S3_CLIENT_FORM_SCAN_LIMIT)
-    if scan_limit < 1:
-        scan_limit = 1
-
     try:
-        # Fast-path: exact prefix in expected filename format.
-        exact_prefix = f"{prefix_root}{safe_name}_"
-        fast_items_raw = _list_keys_for_prefix(bucket=bucket_name, prefix=exact_prefix, limit=scan_limit)
-        fast_items, fast_err = _unpack_list_result(fast_items_raw)
-        latest = _pick_latest_client_form_object(fast_items)
-
-        # Fallback: broader scan with name-signature matching.
-        broad_items: list[dict] = []
-        broad_err = ""
-        if latest is None:
-            broad_items_raw = _list_keys_for_prefix(bucket=bucket_name, prefix=prefix_root, limit=scan_limit)
-            broad_items, broad_err = _unpack_list_result(broad_items_raw)
-            latest = _pick_latest_client_form_object(broad_items, expected_signature=signature)
-
-        if latest is None:
-            logger.warning(
-                "s3_client_form_no_match client_name=%s safe_name=%s bucket=%s exact_prefix=%s exact_items=%s exact_err=%s broad_prefix=%s broad_items=%s broad_err=%s",
-                name,
-                safe_name,
-                bucket_name,
-                exact_prefix,
-                len(fast_items),
-                fast_err,
-                prefix_root,
-                len(broad_items),
-                broad_err,
-            )
-            return None
-
-        key = str(latest.get("Key") or "").strip()
-        if not key:
-            return None
-
-        payload = download_json(key, bucket=bucket_name)
-        if not isinstance(payload, dict):
-            logger.warning(
-                "s3_client_form_payload_download_failed client_name=%s bucket=%s key=%s",
-                name,
-                bucket_name,
-                key,
-            )
-            return None
-        logger.info(
-            "s3_client_form_match client_name=%s bucket=%s key=%s",
-            name,
-            bucket_name,
-            key,
+        match, _diagnostics = _find_latest_client_form_payload_internal(
+            client_name=client_name,
+            bucket=bucket,
+            prefix=prefix,
+            max_scan=max_scan,
         )
-        return key, payload
+        return match
     except Exception as exc:
         logger.warning(
             "s3_client_form_lookup_failed client_name=%s bucket=%s prefix=%s err=%s",
-            name,
-            bucket_name,
-            prefix_root,
+            str(client_name or "").strip(),
+            str(bucket or S3_CLIENT_FORM_BUCKET).strip() or S3_CLIENT_FORM_BUCKET,
+            _client_form_prefix(str(prefix or S3_CLIENT_FORM_PREFIX)),
             exc,
         )
         return None
+
+
+def find_latest_client_form_payload_with_diagnostics(
+    *,
+    client_name: str,
+    bucket: str | None = None,
+    prefix: str | None = None,
+    max_scan: int | None = None,
+) -> tuple[tuple[str, Dict[str, Any]] | None, str]:
+    try:
+        return _find_latest_client_form_payload_internal(
+            client_name=client_name,
+            bucket=bucket,
+            prefix=prefix,
+            max_scan=max_scan,
+        )
+    except Exception as exc:
+        return None, f"lookup_exception={_compact_error(str(exc))}"
 
 
 def head_object_info(key: str) -> Dict[str, Any] | None:

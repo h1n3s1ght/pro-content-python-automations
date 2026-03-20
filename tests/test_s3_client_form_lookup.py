@@ -64,3 +64,17 @@ def test_find_latest_client_form_payload_uses_broad_fallback_and_signature_match
     key, payload = match
     assert key == "clientForm/Banks_Consulting_Northwest_2026-02-20T06-19-06-992Z.json"
     assert payload["metadata"]["key"] == key
+
+
+def test_find_latest_client_form_payload_with_diagnostics_includes_list_errors(monkeypatch):
+    def _fake_list_keys_for_prefix(*, bucket: str, prefix: str, limit: int):
+        return [], "InvalidAccessKeyId"
+
+    monkeypatch.setattr(s3_upload, "_list_keys_for_prefix", _fake_list_keys_for_prefix)
+
+    match, diagnostics = s3_upload.find_latest_client_form_payload_with_diagnostics(
+        client_name="Banks Consulting Northwest"
+    )
+
+    assert match is None
+    assert "InvalidAccessKeyId" in diagnostics

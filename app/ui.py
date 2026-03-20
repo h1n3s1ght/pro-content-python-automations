@@ -1331,6 +1331,31 @@ async def deliveries_page():
             </div>
           </div>
         </div>
+        <div class="modal fade" id="rerunSourceModal" tabindex="-1" aria-labelledby="rerunSourceModalTitle" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="rerunSourceModalTitle">Paste Source Form JSON</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <form id="rerunSourceForm">
+                <div class="modal-body">
+                  <p class="mb-2">Client: <strong id="rerunSourceClientName"></strong></p>
+                  <p class="text-muted small mb-2">Source payload is missing for this delivery. Paste the original form JSON object to continue rerun.</p>
+                  <div class="mb-3">
+                    <label class="form-label" for="rerunSourcePayloadInput">Form JSON *</label>
+                    <textarea id="rerunSourcePayloadInput" class="form-control font-monospace" rows="10" placeholder='{"metadata": {...}, "userdata": {...}}' required></textarea>
+                  </div>
+                  <div id="rerunSourceError" class="alert alert-danger py-2 mt-2 d-none"></div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-outline-secondary" id="rerunSourceBackBtn">Back</button>
+                  <button type="submit" class="btn btn-primary" id="rerunSourceSubmitBtn">Queue Re-run With JSON</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
         <div class="modal fade send-success-modal" id="sendSuccessModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="false" data-bs-keyboard="false">
           <div class="modal-dialog modal-sm modal-dialog-centered">
             <div class="modal-content">
@@ -1365,6 +1390,7 @@ async def deliveries_page():
           const resendModalEl = document.getElementById("resendDeliveryModal");
           const rerunModeModalEl = document.getElementById("rerunModeModal");
           const rerunChangesModalEl = document.getElementById("rerunChangesModal");
+          const rerunSourceModalEl = document.getElementById("rerunSourceModal");
           const sendSuccessModalEl = document.getElementById("sendSuccessModal");
           const sendSuccessProgressBar = document.getElementById("sendSuccessProgressBar");
           const removeForm = document.getElementById("removeDeliveryForm");
@@ -1396,10 +1422,17 @@ async def deliveries_page():
           const rerunAddPageBtn = document.getElementById("rerunAddPageBtn");
           const rerunChangesError = document.getElementById("rerunChangesError");
           const rerunSubmitChangesBtn = document.getElementById("rerunSubmitChangesBtn");
+          const rerunSourceForm = document.getElementById("rerunSourceForm");
+          const rerunSourceClientName = document.getElementById("rerunSourceClientName");
+          const rerunSourcePayloadInput = document.getElementById("rerunSourcePayloadInput");
+          const rerunSourceError = document.getElementById("rerunSourceError");
+          const rerunSourceBackBtn = document.getElementById("rerunSourceBackBtn");
+          const rerunSourceSubmitBtn = document.getElementById("rerunSourceSubmitBtn");
           const removeModal = new bootstrap.Modal(removeModalEl);
           const resendModal = resendModalEl ? new bootstrap.Modal(resendModalEl) : null;
           const rerunModeModal = rerunModeModalEl ? new bootstrap.Modal(rerunModeModalEl) : null;
           const rerunChangesModal = rerunChangesModalEl ? new bootstrap.Modal(rerunChangesModalEl) : null;
+          const rerunSourceModal = rerunSourceModalEl ? new bootstrap.Modal(rerunSourceModalEl) : null;
           const sendSuccessModal = sendSuccessModalEl
             ? new bootstrap.Modal(sendSuccessModalEl, {backdrop: false, keyboard: false})
             : null;
@@ -1429,6 +1462,8 @@ async def deliveries_page():
             tier: "pro",
             clientName: "",
             pageIndex: 0,
+            pendingMode: "",
+            pendingPayload: null,
           };
 
 	          if (isAdminActions) {
@@ -2019,11 +2054,47 @@ async def deliveries_page():
             rerunChangesError.classList.add("d-none");
           }
 
+          function showRerunSourceError(message){
+            if (!rerunSourceError) return;
+            rerunSourceError.textContent = message;
+            rerunSourceError.classList.remove("d-none");
+          }
+
+          function clearRerunSourceError(){
+            if (!rerunSourceError) return;
+            rerunSourceError.textContent = "";
+            rerunSourceError.classList.add("d-none");
+          }
+
+          function isMissingSourcePayloadError(err){
+            const detail = String(err?.detail || "").toLowerCase();
+            const message = String(err?.message || "").toLowerCase();
+            return detail.includes("missing rerun source payload") || message.includes("missing rerun source payload");
+          }
+
+          function resetRerunSourceForm(){
+            if (rerunSourcePayloadInput) rerunSourcePayloadInput.value = "";
+            clearRerunSourceError();
+          }
+
+          function openRerunSourceModal(){
+            if (rerunSourceClientName){
+              rerunSourceClientName.textContent = rerunState.clientName || "this client";
+            }
+            resetRerunSourceForm();
+            if (rerunChangesModal) rerunChangesModal.hide();
+            if (rerunModeModal) rerunModeModal.hide();
+            if (rerunSourceModal) rerunSourceModal.show();
+          }
+
           function resetRerunChangesForm(){
             if (rerunSpecificInstructions) rerunSpecificInstructions.value = "";
             if (rerunNewPagesContainer) rerunNewPagesContainer.innerHTML = "";
             rerunState.pageIndex = 0;
+            rerunState.pendingMode = "";
+            rerunState.pendingPayload = null;
             clearRerunError();
+            clearRerunSourceError();
           }
 
           function collectRerunNewPages(){
@@ -2082,13 +2153,28 @@ async def deliveries_page():
                 body: JSON.stringify(body),
               });
               const newJobId = String(data?.new_job_id || "").trim();
+              rerunState.pendingMode = "";
+              rerunState.pendingPayload = null;
               alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
               await loadDeliveries();
               return true;
             } catch (err) {
               const message = String(err?.message || "Failed to queue re-run.");
+              const hasManualPayload = !!body.manual_source_payload;
+              if (!hasManualPayload && isMissingSourcePayloadError(err)){
+                rerunState.pendingMode = String(mode || "without_changes");
+                rerunState.pendingPayload = Object.assign({}, payload || {});
+                openRerunSourceModal();
+                if (mode === "add_changes"){
+                  showRerunError("Source payload is missing. Paste the client form JSON to continue.");
+                }
+                return false;
+              }
               if (mode === "add_changes"){
                 showRerunError(message);
+              }
+              if (hasManualPayload){
+                showRerunSourceError(message);
               }
               alert(message);
               return false;
@@ -2102,7 +2188,9 @@ async def deliveries_page():
             rerunState.clientName = clientName;
             if (rerunModeClientName) rerunModeClientName.textContent = clientName || "this client";
             if (rerunChangesClientName) rerunChangesClientName.textContent = clientName || "this client";
+            if (rerunSourceClientName) rerunSourceClientName.textContent = clientName || "this client";
             resetRerunChangesForm();
+            resetRerunSourceForm();
             if (rerunModeModal) rerunModeModal.show();
           }
 
@@ -2289,14 +2377,69 @@ async def deliveries_page():
               }
             });
           }
+          if (rerunSourceBackBtn){
+            rerunSourceBackBtn.addEventListener("click", () => {
+              if (rerunSourceModal) rerunSourceModal.hide();
+              if (rerunState.pendingMode === "add_changes"){
+                if (rerunChangesModal) rerunChangesModal.show();
+              } else {
+                if (rerunModeModal) rerunModeModal.show();
+              }
+            });
+          }
+          if (rerunSourceForm){
+            rerunSourceForm.addEventListener("submit", async (event) => {
+              event.preventDefault();
+              clearRerunSourceError();
+              const raw = String(rerunSourcePayloadInput?.value || "").trim();
+              if (!raw){
+                showRerunSourceError("Please paste a JSON object.");
+                return;
+              }
+              let parsed = null;
+              try {
+                parsed = JSON.parse(raw);
+              } catch (_) {
+                showRerunSourceError("Invalid JSON. Please paste a valid JSON object.");
+                return;
+              }
+              if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)){
+                showRerunSourceError("Manual source payload must be a JSON object.");
+                return;
+              }
+              if (rerunSourceSubmitBtn) rerunSourceSubmitBtn.disabled = true;
+              try {
+                const mode = rerunState.pendingMode || "without_changes";
+                const basePayload = Object.assign({}, rerunState.pendingPayload || {});
+                basePayload.manual_source_payload = parsed;
+                const ok = await submitRerunRequest(mode, basePayload);
+                if (ok){
+                  if (rerunSourceModal) rerunSourceModal.hide();
+                  if (rerunChangesModal) rerunChangesModal.hide();
+                  resetRerunChangesForm();
+                  resetRerunSourceForm();
+                }
+              } finally {
+                if (rerunSourceSubmitBtn) rerunSourceSubmitBtn.disabled = false;
+              }
+            });
+          }
           if (rerunModeModalEl){
             rerunModeModalEl.addEventListener("hidden.bs.modal", () => {
+              if (rerunSourceModalEl && rerunSourceModalEl.classList.contains("show")) return;
+              if (rerunChangesModalEl && rerunChangesModalEl.classList.contains("show")) return;
               resetRerunChangesForm();
             });
           }
           if (rerunChangesModalEl){
             rerunChangesModalEl.addEventListener("hidden.bs.modal", () => {
+              if (rerunSourceModalEl && rerunSourceModalEl.classList.contains("show")) return;
               clearRerunError();
+            });
+          }
+          if (rerunSourceModalEl){
+            rerunSourceModalEl.addEventListener("hidden.bs.modal", () => {
+              clearRerunSourceError();
             });
           }
 

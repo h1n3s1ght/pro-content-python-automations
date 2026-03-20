@@ -47,6 +47,9 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "Without Changes" in resp.text
     assert "Add Changes" in resp.text
     assert "id=\"rerunChangesModal\"" in resp.text
+    assert "id=\"rerunSourceModal\"" in resp.text
     assert "Specific Instructions (Optional)" in resp.text
     assert "Add New Page" in resp.text
+    assert "Paste Source Form JSON" in resp.text
+    assert "Queue Re-run With JSON" in resp.text
     assert "/ui/admin/deliveries/" in resp.text

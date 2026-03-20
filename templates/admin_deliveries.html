@@ -161,12 +161,39 @@
         </div>
       </div>
     </div>
+    <div class="modal fade" id="adminRerunSourceModal" tabindex="-1" aria-labelledby="adminRerunSourceModalTitle" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="adminRerunSourceModalTitle">Paste Source Form JSON</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <form id="adminRerunSourceForm">
+            <div class="modal-body">
+              <p class="mb-2">Client: <strong id="adminRerunSourceClientName"></strong></p>
+              <p class="text-muted small mb-2">Source payload is missing for this delivery. Paste the original form JSON object to continue rerun.</p>
+              <div class="mb-3">
+                <label class="form-label" for="adminRerunSourcePayloadInput">Form JSON *</label>
+                <textarea id="adminRerunSourcePayloadInput" class="form-control mono" rows="10" placeholder='{"metadata": {...}, "userdata": {...}}' required></textarea>
+              </div>
+              <div id="adminRerunSourceError" class="alert alert-danger py-2 mt-2 d-none"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" id="adminRerunSourceBackBtn">Back</button>
+              <button type="submit" class="btn btn-primary" id="adminRerunSourceSubmitBtn">Queue Re-run With JSON</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
       const adminRerunModeModalEl = document.getElementById("adminRerunModeModal");
       const adminRerunChangesModalEl = document.getElementById("adminRerunChangesModal");
+      const adminRerunSourceModalEl = document.getElementById("adminRerunSourceModal");
       const adminRerunModeClientName = document.getElementById("adminRerunModeClientName");
       const adminRerunChangesClientName = document.getElementById("adminRerunChangesClientName");
+      const adminRerunSourceClientName = document.getElementById("adminRerunSourceClientName");
       const adminRerunWithoutChangesBtn = document.getElementById("adminRerunWithoutChangesBtn");
       const adminRerunAddChangesBtn = document.getElementById("adminRerunAddChangesBtn");
       const adminRerunBackBtn = document.getElementById("adminRerunBackBtn");
@@ -176,12 +203,20 @@
       const adminRerunChangesForm = document.getElementById("adminRerunChangesForm");
       const adminRerunChangesError = document.getElementById("adminRerunChangesError");
       const adminRerunSubmitChangesBtn = document.getElementById("adminRerunSubmitChangesBtn");
+      const adminRerunSourceForm = document.getElementById("adminRerunSourceForm");
+      const adminRerunSourcePayloadInput = document.getElementById("adminRerunSourcePayloadInput");
+      const adminRerunSourceError = document.getElementById("adminRerunSourceError");
+      const adminRerunSourceBackBtn = document.getElementById("adminRerunSourceBackBtn");
+      const adminRerunSourceSubmitBtn = document.getElementById("adminRerunSourceSubmitBtn");
       const adminRerunModeModal = adminRerunModeModalEl ? new bootstrap.Modal(adminRerunModeModalEl) : null;
       const adminRerunChangesModal = adminRerunChangesModalEl ? new bootstrap.Modal(adminRerunChangesModalEl) : null;
+      const adminRerunSourceModal = adminRerunSourceModalEl ? new bootstrap.Modal(adminRerunSourceModalEl) : null;
       const adminRerunState = {
         deliveryId: "",
         clientName: "",
         pageIndex: 0,
+        pendingMode: "",
+        pendingPayload: null,
       };
 
       function adminNormalizeRerunPath(value){
@@ -202,11 +237,42 @@
         adminRerunChangesError.classList.add("d-none");
       }
 
+      function adminShowSourceError(message){
+        adminRerunSourceError.textContent = message;
+        adminRerunSourceError.classList.remove("d-none");
+      }
+
+      function adminClearSourceError(){
+        adminRerunSourceError.textContent = "";
+        adminRerunSourceError.classList.add("d-none");
+      }
+
+      function adminIsMissingSourceError(err){
+        const text = String(err?.message || "").toLowerCase();
+        return text.includes("missing rerun source payload");
+      }
+
+      function adminResetSourceForm(){
+        adminRerunSourcePayloadInput.value = "";
+        adminClearSourceError();
+      }
+
+      function adminOpenSourceModal(){
+        adminRerunSourceClientName.textContent = adminRerunState.clientName || "this client";
+        adminResetSourceForm();
+        if (adminRerunChangesModal) adminRerunChangesModal.hide();
+        if (adminRerunModeModal) adminRerunModeModal.hide();
+        if (adminRerunSourceModal) adminRerunSourceModal.show();
+      }
+
       function adminResetRerunForm(){
         adminRerunSpecificInstructions.value = "";
         adminRerunNewPagesContainer.innerHTML = "";
         adminRerunState.pageIndex = 0;
+        adminRerunState.pendingMode = "";
+        adminRerunState.pendingPayload = null;
         adminClearRerunError();
+        adminClearSourceError();
       }
 
       function adminNewPageSection(){
@@ -322,10 +388,11 @@
           alert("Missing delivery id for rerun.");
           return false;
         }
+        const requestBody = Object.assign({mode}, payload || {});
         const resp = await fetch(`/ui/admin/deliveries/${adminRerunState.deliveryId}/rerun?tier=pro`, {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify(Object.assign({mode}, payload || {})),
+          body: JSON.stringify(requestBody),
         });
         const raw = await resp.text();
         let data = {};
@@ -340,9 +407,25 @@
           const detail = (data && typeof data === "object")
             ? String(data.detail || data.message || "").trim()
             : "";
-          throw new Error(detail ? `HTTP ${resp.status}: ${detail}` : `HTTP ${resp.status}`);
+          const err = new Error(detail ? `HTTP ${resp.status}: ${detail}` : `HTTP ${resp.status}`);
+          const hasManualPayload = !!requestBody.manual_source_payload;
+          if (!hasManualPayload && adminIsMissingSourceError(err)){
+            adminRerunState.pendingMode = String(mode || "without_changes");
+            adminRerunState.pendingPayload = Object.assign({}, payload || {});
+            adminOpenSourceModal();
+            if (mode === "add_changes"){
+              adminShowRerunError("Source payload is missing. Paste the client form JSON to continue.");
+            }
+            return false;
+          }
+          if (hasManualPayload){
+            adminShowSourceError(err.message || "Failed to queue re-run.");
+          }
+          throw err;
         }
         const newJobId = String(data?.new_job_id || "").trim();
+        adminRerunState.pendingMode = "";
+        adminRerunState.pendingPayload = null;
         const statusNode = document.getElementById(`rerun-status-${adminRerunState.deliveryId}`);
         if (statusNode){
           statusNode.textContent = newJobId ? `Queued: ${newJobId}` : "Queued";
@@ -356,7 +439,9 @@
         adminRerunState.clientName = String(clientName || "").trim();
         adminRerunModeClientName.textContent = adminRerunState.clientName || "this client";
         adminRerunChangesClientName.textContent = adminRerunState.clientName || "this client";
+        adminRerunSourceClientName.textContent = adminRerunState.clientName || "this client";
         adminResetRerunForm();
+        adminResetSourceForm();
         if (adminRerunModeModal){
           adminRerunModeModal.show();
         }
@@ -410,6 +495,60 @@
           } finally {
             adminRerunSubmitChangesBtn.disabled = false;
           }
+        });
+      }
+      if (adminRerunSourceBackBtn){
+        adminRerunSourceBackBtn.addEventListener("click", () => {
+          if (adminRerunSourceModal) adminRerunSourceModal.hide();
+          if (adminRerunState.pendingMode === "add_changes"){
+            if (adminRerunChangesModal) adminRerunChangesModal.show();
+          } else {
+            if (adminRerunModeModal) adminRerunModeModal.show();
+          }
+        });
+      }
+      if (adminRerunSourceForm){
+        adminRerunSourceForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          adminClearSourceError();
+          const raw = String(adminRerunSourcePayloadInput.value || "").trim();
+          if (!raw){
+            adminShowSourceError("Please paste a JSON object.");
+            return;
+          }
+          let parsed = null;
+          try {
+            parsed = JSON.parse(raw);
+          } catch (_) {
+            adminShowSourceError("Invalid JSON. Please paste a valid JSON object.");
+            return;
+          }
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)){
+            adminShowSourceError("Manual source payload must be a JSON object.");
+            return;
+          }
+          adminRerunSourceSubmitBtn.disabled = true;
+          try {
+            const mode = adminRerunState.pendingMode || "without_changes";
+            const basePayload = Object.assign({}, adminRerunState.pendingPayload || {});
+            basePayload.manual_source_payload = parsed;
+            const ok = await adminSubmitRerun(mode, basePayload);
+            if (ok){
+              if (adminRerunSourceModal) adminRerunSourceModal.hide();
+              if (adminRerunChangesModal) adminRerunChangesModal.hide();
+              adminResetRerunForm();
+              adminResetSourceForm();
+            }
+          } catch (err) {
+            adminShowSourceError(String(err?.message || "Failed to queue re-run."));
+          } finally {
+            adminRerunSourceSubmitBtn.disabled = false;
+          }
+        });
+      }
+      if (adminRerunSourceModalEl){
+        adminRerunSourceModalEl.addEventListener("hidden.bs.modal", () => {
+          adminClearSourceError();
         });
       }
     </script>

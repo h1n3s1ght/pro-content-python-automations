@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .delivery_schemas import RerunRequest
 from .job_input_store import get_job_input_payload, upsert_job_input
-from .s3_upload import find_latest_client_form_payload
+from .s3_upload import find_latest_client_form_payload_with_diagnostics
 from .storage import get_payload, register_job, set_payload, set_status
 from .tasks import run_full_job
 
@@ -122,6 +122,7 @@ def _parse_request_from_form_inputs(
     mode: str | None = None,
     specific_instructions: str | None = None,
     new_pages_json: str | None = None,
+    manual_source_payload_json: str | None = None,
 ) -> RerunRequest | None:
     mode_str = _clean_str(mode).lower()
     has_explicit_mode = bool(mode_str)
@@ -136,14 +137,23 @@ def _parse_request_from_form_inputs(
             raise ValueError("new_pages_json must decode to an array")
         pages_raw = [item for item in loaded if isinstance(item, dict)]
 
+    manual_source_payload: Dict[str, Any] | None = None
+    raw_manual_payload = _clean_str(manual_source_payload_json)
+    if raw_manual_payload:
+        manual_loaded = json.loads(raw_manual_payload)
+        if not isinstance(manual_loaded, dict):
+            raise ValueError("manual_source_payload_json must decode to an object")
+        manual_source_payload = manual_loaded
+
     instructions = _clean_str(specific_instructions)
-    if not has_explicit_mode and not instructions and not pages_raw:
+    if not has_explicit_mode and not instructions and not pages_raw and not manual_source_payload:
         return None
 
     return RerunRequest(
         mode=mode_str,
         specific_instructions=instructions,
         new_pages=pages_raw,
+        manual_source_payload=manual_source_payload,
     )
 
 
@@ -152,12 +162,14 @@ def parse_rerun_request_from_form(
     mode: str | None = None,
     specific_instructions: str | None = None,
     new_pages_json: str | None = None,
+    manual_source_payload_json: str | None = None,
 ) -> RerunRequest | None:
     try:
         return _parse_request_from_form_inputs(
             mode=mode,
             specific_instructions=specific_instructions,
             new_pages_json=new_pages_json,
+            manual_source_payload_json=manual_source_payload_json,
         )
     except json.JSONDecodeError as exc:
         raise ValueError(f"new_pages_json is invalid JSON: {exc}") from exc
@@ -252,7 +264,12 @@ def queue_rerun_from_job_id(
     client_name: str = "",
 ) -> str:
     source_job_id = str(job_id or "").strip()
-    payload = get_job_input_payload(source_job_id)
+    payload = None
+    if isinstance(rerun_request, RerunRequest) and isinstance(rerun_request.manual_source_payload, dict):
+        # Admin-supplied manual fallback when historical source payload cannot be resolved.
+        payload = rerun_request.manual_source_payload
+    if not isinstance(payload, dict):
+        payload = get_job_input_payload(source_job_id)
     if not isinstance(payload, dict):
         # Fallback for jobs where job_inputs was not persisted but Redis payload still exists.
         try:
@@ -263,18 +280,25 @@ def queue_rerun_from_job_id(
             payload = redis_payload
     if not isinstance(payload, dict):
         # Final fallback: retrieve latest source payload from S3 client-form archive.
+        s3_diagnostics = ""
         try:
-            s3_match = find_latest_client_form_payload(client_name=str(client_name or "").strip())
+            s3_match, s3_diagnostics = find_latest_client_form_payload_with_diagnostics(
+                client_name=str(client_name or "").strip()
+            )
         except Exception:
             s3_match = None
+            s3_diagnostics = ""
         if isinstance(s3_match, tuple) and len(s3_match) == 2 and isinstance(s3_match[1], dict):
             payload = s3_match[1]
     if not isinstance(payload, dict):
         display_name = str(client_name or "").strip()
         if display_name:
+            details = f" for '{display_name}'"
+            if s3_diagnostics:
+                details += f" ({s3_diagnostics})"
             raise LookupError(
                 f"missing rerun source payload for job_id={source_job_id}; "
-                f"also no matching S3 clientForm payload found for '{display_name}'"
+                f"also no matching S3 clientForm payload found{details}"
             )
         raise LookupError(f"missing rerun source payload for job_id={source_job_id}")
     return queue_rerun_from_payload(

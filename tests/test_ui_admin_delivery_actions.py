@@ -214,3 +214,36 @@ def test_admin_rerun_missing_source_returns_404(admin_actions_client, monkeypatc
     )
 
     assert resp.status_code == 404
+
+
+def test_admin_rerun_manual_source_payload_forwarded(admin_actions_client, monkeypatch):
+    client, rows, _queued_calls = admin_actions_client
+    delivery_id = uuid4()
+    rows[str(delivery_id)] = {"id": delivery_id, "job_id": "job-base", "client_name": "Acme", "status": "READY_TO_SEND"}
+
+    captured = {}
+
+    def _fake_queue(job_id, **kwargs):
+        captured["job_id"] = job_id
+        captured["kwargs"] = kwargs
+        return "new-job-id"
+
+    monkeypatch.setattr(ui_module, "queue_rerun_from_job_id", _fake_queue)
+
+    resp = client.post(
+        f"/ui/admin/deliveries/{delivery_id}/rerun?tier=pro",
+        headers=_admin_headers(),
+        json={
+            "mode": "without_changes",
+            "manual_source_payload": {
+                "metadata": {"business_name": "Acme"},
+                "userdata": {"service_offerings": ["Managed IT"]},
+            },
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["job_id"] == "job-base"
+    assert captured["kwargs"]["rerun_request"] is not None
+    assert captured["kwargs"]["rerun_request"].manual_source_payload is not None
+    assert captured["kwargs"]["rerun_request"].manual_source_payload["metadata"]["business_name"] == "Acme"

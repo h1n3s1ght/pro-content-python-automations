@@ -36,6 +36,25 @@ def test_parse_rerun_request_from_form_rejects_invalid_json():
         )
 
 
+def test_parse_rerun_request_from_form_rejects_invalid_manual_source_json():
+    with pytest.raises(ValueError):
+        parse_rerun_request_from_form(
+            mode="without_changes",
+            manual_source_payload_json='["not-object"]',
+        )
+
+
+def test_parse_rerun_request_from_form_accepts_manual_source_payload():
+    req = parse_rerun_request_from_form(
+        mode="without_changes",
+        manual_source_payload_json='{"metadata":{"business_name":"Acme"},"userdata":{"x":1}}',
+    )
+
+    assert req is not None
+    assert req.manual_source_payload is not None
+    assert req.manual_source_payload["metadata"]["business_name"] == "Acme"
+
+
 
 def test_build_rerun_payload_add_changes_normalizes_pages_and_replaces_duplicates():
     source = {
@@ -116,6 +135,32 @@ def test_queue_rerun_from_job_id_uses_redis_payload_fallback(monkeypatch):
     assert out == "new-job-id"
 
 
+def test_queue_rerun_from_job_id_uses_manual_source_payload_override(monkeypatch):
+    monkeypatch.setattr(rerun_module, "get_job_input_payload", lambda _job_id: None)
+
+    async def _fake_get_payload(_job_id):
+        return None
+
+    monkeypatch.setattr(rerun_module, "get_payload", _fake_get_payload)
+
+    called = {"count": 0}
+
+    def _fake_s3_lookup(**_kwargs):
+        called["count"] += 1
+        return None, "should_not_be_called"
+
+    monkeypatch.setattr(rerun_module, "find_latest_client_form_payload_with_diagnostics", _fake_s3_lookup)
+    monkeypatch.setattr(rerun_module, "queue_rerun_from_payload", lambda *_args, **_kwargs: "new-job-id")
+
+    req = RerunRequest(
+        mode="without_changes",
+        manual_source_payload={"metadata": {"business_name": "Acme"}, "userdata": {}},
+    )
+    out = rerun_module.queue_rerun_from_job_id("job-old", rerun_request=req, client_name="Acme")
+    assert out == "new-job-id"
+    assert called["count"] == 0
+
+
 def test_queue_rerun_from_job_id_uses_s3_client_form_fallback(monkeypatch):
     monkeypatch.setattr(rerun_module, "get_job_input_payload", lambda _job_id: None)
 
@@ -125,8 +170,11 @@ def test_queue_rerun_from_job_id_uses_s3_client_form_fallback(monkeypatch):
     monkeypatch.setattr(rerun_module, "get_payload", _fake_get_payload)
     monkeypatch.setattr(
         rerun_module,
-        "find_latest_client_form_payload",
-        lambda **_kwargs: ("clientForm/Banks_Consulting_Northwest_2026-02-20T06-19-06-992Z.json", {"metadata": {}, "user_data": {}}),
+        "find_latest_client_form_payload_with_diagnostics",
+        lambda **_kwargs: (
+            ("clientForm/Banks_Consulting_Northwest_2026-02-20T06-19-06-992Z.json", {"metadata": {}, "user_data": {}}),
+            "ok",
+        ),
     )
     monkeypatch.setattr(rerun_module, "queue_rerun_from_payload", lambda *_args, **_kwargs: "new-job-id")
 
@@ -145,7 +193,7 @@ def test_queue_rerun_from_job_id_swallows_s3_lookup_exceptions(monkeypatch):
     def _raise(**_kwargs):
         raise RuntimeError("s3 error")
 
-    monkeypatch.setattr(rerun_module, "find_latest_client_form_payload", _raise)
+    monkeypatch.setattr(rerun_module, "find_latest_client_form_payload_with_diagnostics", _raise)
 
     with pytest.raises(LookupError):
         rerun_module.queue_rerun_from_job_id("job-old", client_name="Banks Consulting Northwest")

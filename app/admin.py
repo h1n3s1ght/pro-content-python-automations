@@ -347,6 +347,7 @@ def rerun_delivery(
     mode: str = Form(default=""),
     specific_instructions: str = Form(default=""),
     new_pages_json: str = Form(default=""),
+    manual_source_payload_json: str = Form(default=""),
     session: Session = Depends(get_db_session),
 ):
     row = _get_delivery(session, delivery_id)
@@ -355,6 +356,7 @@ def rerun_delivery(
             mode=mode,
             specific_instructions=specific_instructions,
             new_pages_json=new_pages_json,
+            manual_source_payload_json=manual_source_payload_json,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

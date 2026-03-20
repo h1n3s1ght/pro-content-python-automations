@@ -36,8 +36,11 @@ def test_admin_deliveries_page_contains_rerun_modals(monkeypatch):
     assert resp.status_code == 200
     assert "id=\"adminRerunModeModal\"" in resp.text
     assert "id=\"adminRerunChangesModal\"" in resp.text
+    assert "id=\"adminRerunSourceModal\"" in resp.text
     assert "Without Changes" in resp.text
     assert "Add Changes" in resp.text
     assert "Specific Instructions (Optional)" in resp.text
     assert "Add New Page" in resp.text
+    assert "Paste Source Form JSON" in resp.text
+    assert "Queue Re-run With JSON" in resp.text
     assert "openAdminRerunModal" in resp.text

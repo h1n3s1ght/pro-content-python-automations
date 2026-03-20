@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from typing import Literal
 from uuid import UUID
 
@@ -125,11 +126,21 @@ class RerunRequest(BaseModel):
     mode: RerunMode = "without_changes"
     specific_instructions: str = ""
     new_pages: list[RerunNewPageInput] = Field(default_factory=list)
+    manual_source_payload: dict[str, Any] | None = None
 
     @field_validator("specific_instructions", mode="before")
     @classmethod
     def _trim_specific_instructions(cls, value: str | None) -> str:
         return str(value or "").strip()
+
+    @field_validator("manual_source_payload", mode="before")
+    @classmethod
+    def _normalize_manual_source_payload(cls, value: Any) -> dict[str, Any] | None:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("manual_source_payload must be a JSON object")
+        return value
 
 
 class RerunResponse(BaseModel):
