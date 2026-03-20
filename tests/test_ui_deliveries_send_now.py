@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("PRO_COPY_ASSISTANT_ID", "test-copy")
 os.environ.setdefault("PRO_SITEMAP_ASSISTANT_ID", "test-sitemap")
+os.environ.setdefault("API_BEARER_TOKEN", "test-token")
 
 import app.ui as ui_module
 from app.db import get_db_session

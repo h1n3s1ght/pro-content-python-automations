@@ -23,13 +23,31 @@
       <button class="btn btn-sm btn-outline-primary" type="submit">Save</button>
     </form>
   </td>
-  <td class="text-nowrap">
-    <button
-      class="btn btn-sm btn-primary me-1"
-      hx-post="/admin/deliveries/{{ delivery.id }}/send-now"
+  <td class="url-cell">
+    {% set options = (version_options_by_delivery_id or {}).get(delivery.id|string, []) %}
+    {% set default_job_id = (default_version_by_delivery_id or {}).get(delivery.id|string, "") %}
+    <form
+      class="d-flex gap-2"
+      hx-post="/admin/deliveries/{{ delivery.id }}/send-version"
       hx-target="#delivery-{{ delivery.id }}"
       hx-swap="outerHTML"
-    >Send Now</button>
+    >
+      <select class="form-select form-select-sm" name="version_job_id">
+        {% if options %}
+          {% for option in options %}
+            <option value="{{ option.job_id }}" {% if option.job_id == default_job_id %}selected{% endif %}>
+              {{ option.label }}
+            </option>
+          {% endfor %}
+        {% else %}
+          <option value="">Newest (auto)</option>
+        {% endif %}
+      </select>
+      <button class="btn btn-sm btn-primary" type="submit" name="replay" value="0">Send Selected</button>
+      <button class="btn btn-sm btn-outline-danger" type="submit" name="replay" value="1">Re-send</button>
+    </form>
+  </td>
+  <td class="text-nowrap">
     <button
       class="btn btn-sm btn-outline-secondary me-1"
       hx-post="/admin/deliveries/{{ delivery.id }}/mark-ready"
@@ -37,10 +55,15 @@
       hx-swap="outerHTML"
     >Mark Ready</button>
     <button
-      class="btn btn-sm btn-outline-danger"
-      hx-post="/admin/deliveries/{{ delivery.id }}/send-now"
+      class="btn btn-sm btn-outline-warning"
+      hx-post="/admin/deliveries/{{ delivery.id }}/rerun"
       hx-target="#delivery-{{ delivery.id }}"
       hx-swap="outerHTML"
-    >Retry</button>
+      hx-confirm="Re-run this delivery and create a new job/copy version?"
+    >Re-run Copy</button>
+    {% set rerun_job_id = (rerun_job_id_by_delivery_id or {}).get(delivery.id|string, "") %}
+    {% if rerun_job_id %}
+      <div class="small text-success mt-1">Queued: {{ rerun_job_id }}</div>
+    {% endif %}
   </td>
 </tr>

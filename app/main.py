@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import uuid
@@ -10,6 +11,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from .models import WebhookInput
 from .tasks import run_full_job
 from .storage import get_result, get_status, register_job, set_status, set_payload
+from .job_input_store import upsert_job_input
 from .ui import router as ui_router
 from .deliveries import router as deliveries_router
 from .admin import router as admin_router
@@ -67,6 +69,11 @@ async def webhook_pro_form(payload: WebhookInput, request: Request):
     await set_status(job_id, "queued")
     payload_dict = payload.model_dump(by_alias=False, mode="json")
     await set_payload(job_id, payload_dict)
+    try:
+        await asyncio.to_thread(upsert_job_input, job_id=job_id, input_payload=payload_dict)
+    except Exception as exc:
+        # Preserve current flow even if job input persistence fails.
+        logger.warning("webhook_pro_form_job_input_store_failed job_id=%s err=%s", job_id, exc)
     run_full_job.delay(job_id, payload_dict)
     return {"job_id": job_id, "status": "queued"}
 

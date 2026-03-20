@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("OPENAI_API_KEY", "test-key")
 os.environ.setdefault("PRO_COPY_ASSISTANT_ID", "test-copy")
 os.environ.setdefault("PRO_SITEMAP_ASSISTANT_ID", "test-sitemap")
+os.environ.setdefault("API_BEARER_TOKEN", "test-token")
 
 from app.main import app
 
@@ -38,3 +39,8 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "resendConfirmName" in resp.text
     assert "openResendModal" in resp.text
     assert "Re-send" in resp.text
+    assert "Delivery URL" in resp.text
+    assert "Version" in resp.text
+    assert "refreshVersions" in resp.text
+    assert "rerunCopy" in resp.text
+    assert "/ui/admin/deliveries/" in resp.text

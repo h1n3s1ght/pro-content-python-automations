@@ -225,12 +225,12 @@ def _resolve_target_url(row: dict) -> str:
     return override_url or default_url
 
 
-def _build_delivery_payload(row: dict, target_url: str) -> dict:
+def _build_delivery_payload(row: dict, target_url: str, payload_ref: str | None = None) -> dict:
     return {
         "delivery_id": str(row.get("id") or ""),
         "job_id": row.get("job_id"),
         "client_name": row.get("client_name"),
-        "payload_s3_key": row.get("payload_s3_key"),
+        "payload_s3_key": payload_ref if payload_ref is not None else row.get("payload_s3_key"),
         "target_url": target_url,
         "preview_url": row.get("preview_url"),
     }
@@ -257,7 +257,13 @@ def _build_zapier_payload(row: dict, target_url: str, content: dict) -> dict:
     bind=True,
     autoretry_for=(),
 )
-def send_delivery(self, delivery_id: str, tier: str = "pro", replay: bool = False):
+def send_delivery(
+    self,
+    delivery_id: str,
+    tier: str = "pro",
+    replay: bool = False,
+    payload_ref_override: str | None = None,
+):
     tier_name = normalize_delivery_tier(tier)
     replay_requested = bool(replay)
     claim_statuses = READY_STATUSES if not replay_requested else (*READY_STATUSES, "SENT")
@@ -317,14 +323,15 @@ def send_delivery(self, delivery_id: str, tier: str = "pro", replay: bool = Fals
             return
 
         target_url = resolved
-        payload = _build_delivery_payload(row, target_url)
+        payload_ref = str(payload_ref_override or row.get("payload_s3_key") or "").strip()
+        payload = _build_delivery_payload(row, target_url, payload_ref=payload_ref)
 
         if not ZAPIER_WEBHOOK_URL:
             mark_failed_fn(delivery_id, "missing ZAPIER_WEBHOOK_URL")
             logger.warning("send_delivery_missing_zapier_url delivery_id=%s tier=%s", delivery_id, tier_name)
             return
 
-        content = load_payload_json(row.get("payload_s3_key") or "")
+        content = load_payload_json(payload_ref)
         if content is None:
             mark_failed_fn(delivery_id, "missing payload content")
             logger.warning("send_delivery_missing_payload delivery_id=%s tier=%s", delivery_id, tier_name)
@@ -338,7 +345,8 @@ def send_delivery(self, delivery_id: str, tier: str = "pro", replay: bool = Fals
             mark_failed_fn(delivery_id, "missing target_url")
             logger.warning("send_delivery_missing_target delivery_id=%s tier=%s", delivery_id, tier_name)
             return
-        payload = _build_delivery_payload(row, target_url)
+        payload_ref = str(payload_ref_override or row.get("payload_s3_key") or "").strip()
+        payload = _build_delivery_payload(row, target_url, payload_ref=payload_ref)
         url = target_url
     else:
         mark_failed_fn(delivery_id, f"invalid DELIVERY_MODE: {mode}")

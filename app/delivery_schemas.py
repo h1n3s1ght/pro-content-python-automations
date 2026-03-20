@@ -47,3 +47,25 @@ class ScheduleRequest(BaseModel):
 class SendNowResponse(BaseModel):
     ok: bool
     task_id: str
+
+
+class DeliveryVersionOption(BaseModel):
+    job_id: str
+    label: str
+    updated_at: datetime | None = None
+    is_latest: bool = False
+
+
+class DeliveryVersionsResponse(BaseModel):
+    items: list[DeliveryVersionOption]
+    default_job_id: str | None = None
+
+
+class SendVersionRequest(BaseModel):
+    version_job_id: str | None = None
+
+
+class RerunResponse(BaseModel):
+    ok: bool
+    new_job_id: str
+    task_queued: bool = True

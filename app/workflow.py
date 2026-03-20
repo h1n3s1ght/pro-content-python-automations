@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional, List
 from .sitemap import generate_sitemap
 from .openai_copy import generate_page_with_retries
 from .openai_campaign import generate_campaign_page_with_retries
+from .client_identity import build_client_key
 from .compile import compile_final
 from .s3_upload import datetime_cst_stamp
 from .copy_store import upsert_job_copy
@@ -218,6 +219,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     business_domain = _extract_business_domain(metadata)
     job_id_value = job_id or ""
     client_name = business_name or business_domain or job_id_value
+    client_key = build_client_key(client_name=client_name, business_domain=business_domain)
 
     async def log_i(msg: str) -> None:
         if job_id:
@@ -414,6 +416,7 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
                 upsert_job_copy,
                 job_id=job_id_value,
                 client_name=client_name,
+                client_key=client_key,
                 copy_data=final_copy,
             )
             if db_copy_id:

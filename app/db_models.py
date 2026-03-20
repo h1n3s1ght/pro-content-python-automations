@@ -62,7 +62,26 @@ class JobCopy(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     job_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     client_name: Mapped[str] = mapped_column(String, nullable=False)
+    client_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     copy_data: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class JobInput(Base):
+    __tablename__ = "job_inputs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    client_name: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    business_domain: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    client_key: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
+    input_payload: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

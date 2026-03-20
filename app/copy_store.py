@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Tuple
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 
+from .client_identity import build_client_key
 from .db import get_sessionmaker
 from .db_models import JobCopy, RecentlyDeletedJobCopy
 
@@ -20,6 +21,7 @@ def upsert_job_copy(
     *,
     job_id: str,
     client_name: str,
+    client_key: str | None = None,
     copy_data: Dict[str, Any],
 ) -> uuid.UUID | None:
     """
@@ -27,17 +29,20 @@ def upsert_job_copy(
 
     Upsert by job_id so retries/resumes overwrite the same row.
     """
+    resolved_client_key = str(client_key or "").strip() or build_client_key(client_name=client_name, business_domain="")
     stmt = (
         insert(JobCopy)
         .values(
             job_id=job_id,
             client_name=client_name,
+            client_key=resolved_client_key,
             copy_data=copy_data or {},
         )
         .on_conflict_do_update(
             index_elements=[JobCopy.job_id],
             set_={
                 "client_name": client_name,
+                "client_key": resolved_client_key,
                 "copy_data": copy_data or {},
                 "updated_at": func.now(),
             },
@@ -201,4 +206,3 @@ def list_recently_deleted_job_copies(
         return rows, int(total or 0)
     finally:
         session.close()
-

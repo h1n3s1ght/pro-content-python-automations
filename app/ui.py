@@ -12,9 +12,24 @@ from fastapi import Query
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from .auth import require_admin_auth
 from .db import get_db_session
 from .db_models import DeliveryOutbox
-from .delivery_schemas import DeliveryListResponse, DeliveryOutboxSchema, OverrideURLRequest, SendNowResponse
+from .delivery_rerun import queue_rerun_from_job_id
+from .delivery_schemas import (
+    DeliveryListResponse,
+    DeliveryOutboxSchema,
+    DeliveryVersionsResponse,
+    OverrideURLRequest,
+    RerunResponse,
+    SendNowResponse,
+    SendVersionRequest,
+)
+from .delivery_versions import (
+    delivery_client_key,
+    list_version_options_for_client,
+    resolve_requested_version_job_id,
+)
 from .storage import (
     list_jobs_with_scores,
     get_status,
@@ -491,6 +506,101 @@ def send_now(
     return SendNowResponse(ok=True, task_id=async_result.id)
 
 
+@router.get(
+    "/admin/deliveries/{delivery_id}/versions",
+    response_model=DeliveryVersionsResponse,
+    dependencies=[Depends(require_admin_auth)],
+)
+def admin_delivery_versions(
+    delivery_id: UUID,
+    tier: str | None = Query(default=None),
+    session: Session = Depends(get_db_session),
+):
+    tier_name = normalize_delivery_tier(tier)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    client_key = delivery_client_key(
+        session,
+        job_id=row.get("job_id"),
+        client_name=row.get("client_name"),
+    )
+    items = list_version_options_for_client(session, client_key=client_key)
+    default_job_id = items[0].job_id if items else None
+    return DeliveryVersionsResponse(items=items, default_job_id=default_job_id)
+
+
+@router.post(
+    "/admin/deliveries/{delivery_id}/send-version",
+    response_model=SendNowResponse,
+    dependencies=[Depends(require_admin_auth)],
+)
+def admin_send_version(
+    delivery_id: UUID,
+    payload: SendVersionRequest,
+    tier: str | None = Query(default=None),
+    replay: bool = Query(default=False),
+    session: Session = Depends(get_db_session),
+):
+    tier_name = normalize_delivery_tier(tier)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    current_status = str(row.get("status") or "").strip().upper()
+    allowed_statuses = _allowed_send_statuses(replay=replay)
+    if current_status not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"delivery status '{current_status or 'UNKNOWN'}' cannot be sent "
+                f"with replay={str(bool(replay)).lower()}"
+            ),
+        )
+
+    client_key = delivery_client_key(
+        session,
+        job_id=row.get("job_id"),
+        client_name=row.get("client_name"),
+    )
+
+    selected_job_id = str(payload.version_job_id or "").strip()
+    payload_ref_override: str | None = None
+    if selected_job_id:
+        exists, belongs = resolve_requested_version_job_id(
+            session,
+            client_key=client_key,
+            version_job_id=selected_job_id,
+        )
+        if not exists:
+            raise HTTPException(status_code=404, detail="selected version not found")
+        if not belongs:
+            raise HTTPException(status_code=400, detail="selected version does not belong to this client")
+        payload_ref_override = f"db:{selected_job_id}"
+    else:
+        versions = list_version_options_for_client(session, client_key=client_key)
+        if versions:
+            payload_ref_override = f"db:{versions[0].job_id}"
+
+    async_result = send_delivery.delay(str(delivery_id), tier_name, bool(replay), payload_ref_override)
+    return SendNowResponse(ok=True, task_id=async_result.id)
+
+
+@router.post(
+    "/admin/deliveries/{delivery_id}/rerun",
+    response_model=RerunResponse,
+    dependencies=[Depends(require_admin_auth)],
+)
+def admin_rerun_delivery(
+    delivery_id: UUID,
+    tier: str | None = Query(default=None),
+    session: Session = Depends(get_db_session),
+):
+    tier_name = normalize_delivery_tier(tier)
+    row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
+    source_job_id = str(row.get("job_id") or "").strip()
+    try:
+        new_job_id = queue_rerun_from_job_id(source_job_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="missing rerun source payload")
+    return RerunResponse(ok=True, new_job_id=new_job_id, task_queued=True)
+
+
 @router.post("/deliveries/{delivery_id}/delete")
 def delete_failed_delivery(
     delivery_id: UUID,
@@ -816,6 +926,13 @@ async def deliveries_page():
             border-color: var(--line);
             color: var(--text-700);
           }
+          .version-select{
+            min-width: 230px;
+            height: 36px;
+            border-radius: 10px;
+            border-color: var(--line);
+            color: var(--text-700);
+          }
           .btn-pill{
             height: 36px;
             border-radius: 10px;
@@ -863,6 +980,20 @@ async def deliveries_page():
             border-color: #ef4444 !important;
             color:#fff !important;
             filter: brightness(0.95);
+          }
+          .btn-rerun{
+            background: #fff7e6;
+            border-color: #e9d8b2;
+            color: #5f4a1f;
+          }
+          .btn-rerun:hover,
+          .btn-rerun:focus,
+          .btn-rerun:focus-visible,
+          .btn-rerun:active{
+            background: #f6ecd8 !important;
+            border-color: #dcc796 !important;
+            color: #5f4a1f !important;
+            filter: none;
           }
           .btn-send:disabled,
           .btn-remove:disabled{
@@ -1053,12 +1184,13 @@ async def deliveries_page():
 	                  <th scope="col">
 	                    <button type="button" class="sort-trigger" data-sort-key="created_at">Created<span class="sort-indicator" id="sort-indicator-created_at">↕</span></button>
 	                  </th>
-		                  <th scope="col" class="admin-action">Delivery URL</th>
+	                  <th scope="col" class="admin-action">Delivery URL</th>
+	                  <th scope="col" class="admin-action">Version</th>
 	                  <th scope="col" class="admin-action">Actions</th>
 	                </tr>
 		              </thead>
 		              <tbody id="deliveriesBody">
-		                <tr><td colspan="6" class="text-muted">Loading…</td></tr>
+		                <tr><td colspan="7" class="text-muted">Loading…</td></tr>
 				              </tbody>
 				              </table>
 			            </div>
@@ -1201,6 +1333,7 @@ async def deliveries_page():
 	          let activeSortDir = "asc";
 	          let rawItems = [];
 	          let sendSuccessTimer = null;
+	          const versionCache = new Map();
 
 	          if (isAdminActions) {
 	            document.body.classList.add("admin-actions-enabled");
@@ -1457,7 +1590,7 @@ async def deliveries_page():
 
 		          function renderRows(items){
 		            if (!items.length){
-		              body.innerHTML = `<tr><td colspan="6" class="text-muted">No deliveries found.</td></tr>`;
+		              body.innerHTML = `<tr><td colspan="7" class="text-muted">No deliveries found.</td></tr>`;
 		              return;
 	            }
 	            body.innerHTML = items.map(item => {
@@ -1479,6 +1612,7 @@ async def deliveries_page():
 	                ? `<button class="btn btn-sm btn-outline-danger ms-2 admin-action" onclick="deleteDelivery('${item.id}', '${tier}')">Delete</button>`
 	                : ``;
 	              const removeBtn = `<button class="btn btn-pill btn-remove ms-2 admin-action" onclick="openRemoveModal('${item.id}', '${tier}', '${encodedClientName}')">Remove</button>`;
+	              const rerunBtn = `<button class="btn btn-pill btn-rerun ms-2 admin-action" onclick="rerunCopy('${item.id}', '${tier}', '${encodedClientName}')">Re-run</button>`;
 		              return `
 		                <tr>
 		                  <td>${item.client_name || ""}</td>
@@ -1488,15 +1622,31 @@ async def deliveries_page():
 			                  <td class="admin-action">
 			                    <input id="delivery-url-${rowKey}" class="form-control form-control-sm url-input" placeholder="${placeholder}" value="${urlValue}" />
 		                  </td>
+			                  <td class="admin-action">
+			                    <div class="d-flex align-items-center gap-2">
+			                      <select id="delivery-version-${rowKey}" class="form-select form-select-sm version-select">
+			                        <option value="">Newest (auto)</option>
+			                      </select>
+			                      <button class="btn btn-sm btn-outline-secondary admin-action" onclick="refreshVersions('${item.id}', '${tier}')" title="Refresh versions">↻</button>
+			                    </div>
+		                  </td>
 		                  <td class="text-nowrap admin-action">
 		                    ${sendBtn}
 		                    ${deleteBtn}
 		                    ${removeBtn}
+		                    ${rerunBtn}
 		                  </td>
 		                </tr>
 		              `;
 		            }).join("");
 		            applyTierStyling();
+		            if (isAdminActions){
+		              versionCache.clear();
+		              for (const item of items){
+		                const tier = String(item.website_tier || "Pro").toLowerCase() === "express" ? "express" : "pro";
+		                void fetchVersions(item.id, tier);
+		              }
+		            }
 		          }
 
 	          async function apiJSON(url, opts={}){
@@ -1506,7 +1656,7 @@ async def deliveries_page():
 	          }
 
 		          async function loadDeliveries(){
-		            body.innerHTML = `<tr><td colspan="6" class="text-muted">Loading…</td></tr>`;
+		            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
 		            const params = new URLSearchParams();
 		            syncDateRangeFromDays();
 		            const client = (clientFilter.value || "").trim();
@@ -1527,7 +1677,7 @@ async def deliveries_page():
 		            try {
 		              data = await apiJSON(`/ui/api/deliveries?${params.toString()}`);
 		            } catch (_) {
-		              body.innerHTML = `<tr><td colspan="6" class="text-danger">Failed to load deliveries.</td></tr>`;
+		              body.innerHTML = `<tr><td colspan="7" class="text-danger">Failed to load deliveries.</td></tr>`;
 		              return;
 		            }
 
@@ -1547,6 +1697,75 @@ async def deliveries_page():
 	            return (input ? input.value : "").trim();
 	          }
 
+	          function versionKey(id, tier){
+	            return `${tier}-${id}`;
+	          }
+
+	          function getVersionSelect(id, tier){
+	            return document.getElementById(`delivery-version-${versionKey(id, tier)}`);
+	          }
+
+	          function getSelectedVersionJobId(id, tier){
+	            const select = getVersionSelect(id, tier);
+	            return (select ? String(select.value || "").trim() : "");
+	          }
+
+	          function setVersionSelectLoading(select){
+	            if (!select) return;
+	            select.disabled = true;
+	            select.innerHTML = `<option value="">Loading…</option>`;
+	          }
+
+	          function populateVersionSelect(select, payload){
+	            if (!select) return;
+	            const items = Array.isArray(payload?.items) ? payload.items : [];
+	            const defaultJobId = String(payload?.default_job_id || "").trim();
+	            if (!items.length){
+	              select.innerHTML = `<option value="">Newest (auto)</option>`;
+	              select.disabled = false;
+	              return;
+	            }
+	            select.innerHTML = items.map((item) => {
+	              const jobId = String(item?.job_id || "").trim();
+	              const label = String(item?.label || jobId || "Version");
+	              const selected = defaultJobId && defaultJobId === jobId ? "selected" : "";
+	              return `<option value="${escapeHtml(jobId)}" ${selected}>${escapeHtml(label)}</option>`;
+	            }).join("");
+	            if (!defaultJobId && select.options.length){
+	              select.selectedIndex = 0;
+	            }
+	            select.disabled = false;
+	          }
+
+	          async function fetchVersions(id, tier, force = false){
+	            if (!isAdminActions){
+	              return {items: [], default_job_id: null};
+	            }
+	            const key = versionKey(id, tier);
+	            if (!force && versionCache.has(key)){
+	              return versionCache.get(key);
+	            }
+	            const select = getVersionSelect(id, tier);
+	            setVersionSelectLoading(select);
+	            try {
+	              const params = new URLSearchParams();
+	              params.set("tier", tier);
+	              const data = await apiJSON(`/ui/admin/deliveries/${id}/versions?${params.toString()}`);
+	              versionCache.set(key, data);
+	              populateVersionSelect(select, data);
+	              return data;
+	            } catch (_) {
+	              const fallback = {items: [], default_job_id: null};
+	              versionCache.set(key, fallback);
+	              populateVersionSelect(select, fallback);
+	              return fallback;
+	            }
+	          }
+
+	          async function refreshVersions(id, tier){
+	            await fetchVersions(id, tier, true);
+	          }
+
 		          async function queueDelivery(id, tier, options = {}){
 	            const replay = Boolean(options && options.replay);
 	            const url = getDeliveryUrlValue(id, tier);
@@ -1554,6 +1773,8 @@ async def deliveries_page():
 	              alert("Please enter a Delivery URL first.");
 	              return false;
 	            }
+	            await fetchVersions(id, tier);
+	            const selectedVersionJobId = getSelectedVersionJobId(id, tier);
 	            const overrideParams = new URLSearchParams();
 	            overrideParams.set("tier", tier);
 	            const overrideQs = `?${overrideParams.toString()}`;
@@ -1568,7 +1789,11 @@ async def deliveries_page():
 		                headers: {"Content-Type": "application/json"},
 		                body: JSON.stringify({override_target_url: url}),
 		              });
-		              await apiJSON(`/ui/deliveries/${id}/send-now${sendQs}`, { method: "POST" });
+		              await apiJSON(`/ui/admin/deliveries/${id}/send-version${sendQs}`, {
+		                method: "POST",
+		                headers: {"Content-Type": "application/json"},
+		                body: JSON.stringify({version_job_id: selectedVersionJobId || null}),
+		              });
 		              showSendSuccessModal();
 		              await loadDeliveries();
 		              return true;
@@ -1581,6 +1806,21 @@ async def deliveries_page():
 		          async function sendNow(id, tier){
 		            await queueDelivery(id, tier, {replay: false});
 		          }
+
+	          async function rerunCopy(id, tier, encodedClientName){
+	            const clientName = decodeURIComponent(encodedClientName || "");
+	            const ok = confirm(`Re-run copy generation for ${clientName || "this client"}? This will queue a new job and create a new version.`);
+	            if (!ok) return;
+	            const params = new URLSearchParams();
+	            params.set("tier", tier);
+	            try {
+	              const data = await apiJSON(`/ui/admin/deliveries/${id}/rerun?${params.toString()}`, { method: "POST" });
+	              const newJobId = String(data?.new_job_id || "").trim();
+	              alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
+	            } catch (_) {
+	              alert("Failed to queue re-run. Make sure admin auth is valid.");
+	            }
+	          }
 
 	          async function deleteDelivery(id, tier){
 	            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
@@ -1715,6 +1955,8 @@ async def deliveries_page():
 
 	          window.sendNow = sendNow;
 	          window.deleteDelivery = deleteDelivery;
+	          window.refreshVersions = refreshVersions;
+	          window.rerunCopy = rerunCopy;
 	          window.openRemoveModal = openRemoveModal;
 	          window.openResendModal = openResendModal;
 

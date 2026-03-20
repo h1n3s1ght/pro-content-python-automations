@@ -1,19 +1,17 @@
 from __future__ import annotations
 
-import base64
-import hmac
 import json
-import os
 from datetime import datetime, timezone
 from typing import Iterable
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from .auth import require_admin_auth
 from .db import get_db_session
 from .db_models import DeliveryOutbox, JobCopy, RecentlyDeletedJobCopy
 from .copy_store import (
@@ -22,9 +20,13 @@ from .copy_store import (
     list_recently_deleted_job_copies,
     soft_delete_job_copy,
 )
+from .delivery_rerun import queue_rerun_from_job_id
+from .delivery_versions import (
+    delivery_client_key,
+    list_version_options_for_client,
+    resolve_requested_version_job_id,
+)
 from .tasks import finalize_deleted_job_copy, send_delivery
-
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 
 templates = Jinja2Templates(directory="templates")
 
@@ -47,33 +49,6 @@ def _format_dt(value: datetime | None) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %Z")
-
-
-def _parse_basic_auth(authorization: str) -> tuple[str, str]:
-    try:
-        scheme, encoded = authorization.split(" ", 1)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid authorization header", headers={"WWW-Authenticate": "Basic"})
-    if scheme.lower() != "basic":
-        raise HTTPException(status_code=401, detail="Invalid auth scheme", headers={"WWW-Authenticate": "Basic"})
-    try:
-        decoded = base64.b64decode(encoded).decode("utf-8")
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid auth encoding", headers={"WWW-Authenticate": "Basic"})
-    if ":" not in decoded:
-        raise HTTPException(status_code=401, detail="Invalid auth format", headers={"WWW-Authenticate": "Basic"})
-    username, password = decoded.split(":", 1)
-    return username, password
-
-
-def require_admin_auth(authorization: str | None = Header(default=None)) -> None:
-    if not ADMIN_PASSWORD:
-        raise HTTPException(status_code=500, detail="ADMIN_PASSWORD is missing")
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Unauthorized", headers={"WWW-Authenticate": "Basic"})
-    _, password = _parse_basic_auth(authorization)
-    if not hmac.compare_digest(password, ADMIN_PASSWORD):
-        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 def _get_delivery(session: Session, delivery_id: UUID) -> DeliveryOutbox:
@@ -106,10 +81,35 @@ def _list_deliveries(
     return rows, total
 
 
-def _render_row(request: Request, delivery: DeliveryOutbox) -> HTMLResponse:
+def _delivery_version_data(session: Session, delivery: DeliveryOutbox) -> tuple[list[dict], str]:
+    client_key = delivery_client_key(
+        session,
+        job_id=delivery.job_id,
+        client_name=delivery.client_name,
+    )
+    options = list_version_options_for_client(session, client_key=client_key)
+    default_job_id = options[0].job_id if options else ""
+    return [opt.model_dump(mode="json") for opt in options], default_job_id
+
+
+def _render_row(
+    request: Request,
+    session: Session,
+    delivery: DeliveryOutbox,
+    *,
+    rerun_job_id: str | None = None,
+) -> HTMLResponse:
+    options, default_job_id = _delivery_version_data(session, delivery)
     return templates.TemplateResponse(
         "partials/delivery_row.html",
-        {"request": request, "delivery": delivery, "format_dt": _format_dt},
+        {
+            "request": request,
+            "delivery": delivery,
+            "format_dt": _format_dt,
+            "version_options_by_delivery_id": {str(delivery.id): options},
+            "default_version_by_delivery_id": {str(delivery.id): default_job_id},
+            "rerun_job_id_by_delivery_id": {str(delivery.id): rerun_job_id or ""},
+        },
     )
 
 
@@ -136,6 +136,16 @@ def deliveries_page(
     session: Session = Depends(get_db_session),
 ):
     rows, total = _list_deliveries(session, status, page, page_size)
+    version_options_by_delivery_id: dict[str, list[dict]] = {}
+    default_version_by_delivery_id: dict[str, str] = {}
+    rerun_job_id_by_delivery_id: dict[str, str] = {}
+    for delivery in rows:
+        options, default_job_id = _delivery_version_data(session, delivery)
+        did = str(delivery.id)
+        version_options_by_delivery_id[did] = options
+        default_version_by_delivery_id[did] = default_job_id
+        rerun_job_id_by_delivery_id[did] = ""
+
     has_prev = page > 1
     has_next = page * page_size < total
     return templates.TemplateResponse(
@@ -151,6 +161,9 @@ def deliveries_page(
             "has_next": has_next,
             "status_options": STATUS_OPTIONS,
             "format_dt": _format_dt,
+            "version_options_by_delivery_id": version_options_by_delivery_id,
+            "default_version_by_delivery_id": default_version_by_delivery_id,
+            "rerun_job_id_by_delivery_id": rerun_job_id_by_delivery_id,
         },
     )
 
@@ -272,7 +285,7 @@ def override_url(
     row.override_target_url = value if value else None
     session.commit()
     session.refresh(row)
-    return _render_row(request, row)
+    return _render_row(request, session, row)
 
 
 @router.post("/deliveries/{delivery_id}/send-now", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
@@ -284,7 +297,61 @@ def send_now(
     _get_delivery(session, delivery_id)
     send_delivery.delay(str(delivery_id))
     row = _get_delivery(session, delivery_id)
-    return _render_row(request, row)
+    return _render_row(request, session, row)
+
+
+def _parse_replay_flag(value: str | None) -> bool:
+    raw = str(value or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+@router.post("/deliveries/{delivery_id}/send-version", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def send_version(
+    request: Request,
+    delivery_id: UUID,
+    version_job_id: str = Form(default=""),
+    replay: str = Form(default="0"),
+    session: Session = Depends(get_db_session),
+):
+    row = _get_delivery(session, delivery_id)
+    replay_requested = _parse_replay_flag(replay)
+    client_key = delivery_client_key(session, job_id=row.job_id, client_name=row.client_name)
+
+    selected_job_id = str(version_job_id or "").strip()
+    payload_ref_override: str | None = None
+    if selected_job_id:
+        exists, belongs = resolve_requested_version_job_id(
+            session,
+            client_key=client_key,
+            version_job_id=selected_job_id,
+        )
+        if not exists:
+            raise HTTPException(status_code=404, detail="selected version not found")
+        if not belongs:
+            raise HTTPException(status_code=400, detail="selected version does not belong to this client")
+        payload_ref_override = f"db:{selected_job_id}"
+    else:
+        options = list_version_options_for_client(session, client_key=client_key)
+        if options:
+            payload_ref_override = f"db:{options[0].job_id}"
+
+    send_delivery.delay(str(delivery_id), "pro", replay_requested, payload_ref_override)
+    row = _get_delivery(session, delivery_id)
+    return _render_row(request, session, row)
+
+
+@router.post("/deliveries/{delivery_id}/rerun", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
+def rerun_delivery(
+    request: Request,
+    delivery_id: UUID,
+    session: Session = Depends(get_db_session),
+):
+    row = _get_delivery(session, delivery_id)
+    try:
+        new_job_id = queue_rerun_from_job_id(row.job_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="missing rerun source payload")
+    return _render_row(request, session, row, rerun_job_id=new_job_id)
 
 
 @router.post("/deliveries/{delivery_id}/mark-ready", response_class=HTMLResponse, dependencies=[Depends(require_admin_auth)])
@@ -299,4 +366,4 @@ def mark_ready(
     row.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(row)
-    return _render_row(request, row)
+    return _render_row(request, session, row)
