@@ -46,6 +46,16 @@ with psycopg.connect(dsn) as conn:
 print("predeploy_db_ok", flush=True)
 PY
 
+python3 - <<'PY'
+import sys
+
+from app.predeploy_checks import run_client_form_probe
+
+ok, message = run_client_form_probe()
+print(message, flush=True)
+if not ok:
+    sys.exit(1)
+PY
+
 alembic -c "${ALEMBIC_INI:-${ROOT_DIR}/alembic.ini}" upgrade head
 echo "predeploy_migrations_ok"
-

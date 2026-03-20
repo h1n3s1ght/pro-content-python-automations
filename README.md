@@ -25,8 +25,18 @@ Set Render **Pre-Deploy Command** to:
 
 This command:
 - verifies DB connectivity (`SELECT 1`)
+- verifies S3 client-form lookup via a deploy probe (defaults to `"ISAAC TESTING"`)
 - auto-resizes `alembic_version.version_num` when legacy DBs still use `varchar(32)`
 - runs `alembic upgrade head` before the new web process goes live
+
+Optional S3 probe env vars (for `scripts/predeploy_render.sh`):
+- `PREDEPLOY_S3_PROBE_ENABLED` (default `1`): set `0` to skip probe.
+- `PREDEPLOY_S3_PROBE_CLIENT_NAME` (default `ISAAC TESTING`).
+- `PREDEPLOY_S3_PROBE_EXPECTED_KEY` (default `clientForm/ISAAC_TESTING_2026-03-19T20-46-06-406Z.json`).
+  - Accepts key, `s3://...`, or `https://...` URL forms.
+- `PREDEPLOY_S3_PROBE_BUCKET` (default falls back to `S3_CLIENT_FORM_BUCKET`, then `pro-tier-bucket`).
+- `PREDEPLOY_S3_PROBE_PREFIX` (default falls back to `S3_CLIENT_FORM_PREFIX`, then `clientForm/`).
+- `PREDEPLOY_S3_PROBE_SCAN_LIMIT` (default `2000`).
 
 ## Delivery outbox
 
