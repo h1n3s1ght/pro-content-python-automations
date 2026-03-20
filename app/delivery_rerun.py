@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .delivery_schemas import RerunRequest
 from .job_input_store import get_job_input_payload, upsert_job_input
-from .storage import register_job, set_payload, set_status
+from .storage import get_payload, register_job, set_payload, set_status
 from .tasks import run_full_job
 
 
@@ -251,6 +251,14 @@ def queue_rerun_from_job_id(
 ) -> str:
     source_job_id = str(job_id or "").strip()
     payload = get_job_input_payload(source_job_id)
+    if not isinstance(payload, dict):
+        # Fallback for jobs where job_inputs was not persisted but Redis payload still exists.
+        try:
+            redis_payload = asyncio.run(get_payload(source_job_id))
+        except Exception:
+            redis_payload = None
+        if isinstance(redis_payload, dict):
+            payload = redis_payload
     if not isinstance(payload, dict):
         raise LookupError(f"missing rerun source payload for job_id={source_job_id}")
     return queue_rerun_from_payload(

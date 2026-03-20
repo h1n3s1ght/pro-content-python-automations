@@ -603,7 +603,13 @@ def admin_rerun_delivery(
             source_delivery_id=str(delivery_id),
         )
     except LookupError:
-        raise HTTPException(status_code=404, detail="missing rerun source payload")
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "missing rerun source payload for this delivery job; "
+                "this usually means it was created before source capture was enabled"
+            ),
+        )
     return RerunResponse(ok=True, new_job_id=new_job_id, task_queued=True)
 
 
@@ -1737,11 +1743,28 @@ async def deliveries_page():
 		            }
 		          }
 
-	          async function apiJSON(url, opts={}){
-	            const res = await fetch(url, opts);
-	            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-	            return await res.json();
-	          }
+          async function apiJSON(url, opts={}){
+            const res = await fetch(url, opts);
+            const raw = await res.text();
+            let data = {};
+            if (raw){
+              try {
+                data = JSON.parse(raw);
+              } catch (_) {
+                data = {};
+              }
+            }
+            if (!res.ok){
+              const detail = (data && typeof data === "object")
+                ? String(data.detail || data.message || "").trim()
+                : "";
+              const err = new Error(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
+              err.status = res.status;
+              err.detail = detail;
+              throw err;
+            }
+            return data;
+          }
 
 		          async function loadDeliveries(){
 		            body.innerHTML = `<tr><td colspan="7" class="text-muted">Loading…</td></tr>`;
@@ -2060,8 +2083,12 @@ async def deliveries_page():
               alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
               await loadDeliveries();
               return true;
-            } catch (_) {
-              alert("Failed to queue re-run. Make sure admin auth is valid.");
+            } catch (err) {
+              const message = String(err?.message || "Failed to queue re-run.");
+              if (mode === "add_changes"){
+                showRerunError(message);
+              }
+              alert(message);
               return false;
             }
           }

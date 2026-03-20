@@ -327,10 +327,21 @@
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(Object.assign({mode}, payload || {})),
         });
-        if (!resp.ok){
-          throw new Error(`HTTP ${resp.status}`);
+        const raw = await resp.text();
+        let data = {};
+        if (raw){
+          try {
+            data = JSON.parse(raw);
+          } catch (_) {
+            data = {};
+          }
         }
-        const data = await resp.json();
+        if (!resp.ok){
+          const detail = (data && typeof data === "object")
+            ? String(data.detail || data.message || "").trim()
+            : "";
+          throw new Error(detail ? `HTTP ${resp.status}: ${detail}` : `HTTP ${resp.status}`);
+        }
         const newJobId = String(data?.new_job_id || "").trim();
         const statusNode = document.getElementById(`rerun-status-${adminRerunState.deliveryId}`);
         if (statusNode){

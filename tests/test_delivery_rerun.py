@@ -1,6 +1,13 @@
+import os
+
 import pytest
 from pydantic import ValidationError
 
+os.environ.setdefault("OPENAI_API_KEY", "test-key")
+os.environ.setdefault("PRO_COPY_ASSISTANT_ID", "test-copy")
+os.environ.setdefault("PRO_SITEMAP_ASSISTANT_ID", "test-sitemap")
+
+import app.delivery_rerun as rerun_module
 from app.delivery_rerun import build_rerun_payload, parse_rerun_request_from_form
 from app.delivery_schemas import RerunRequest
 
@@ -94,3 +101,16 @@ def test_build_rerun_payload_without_changes_adds_trace_metadata():
     assert out["user_data"]["rerun_overrides"]["mode"] == "without_changes"
     assert out["user_data"]["service_offerings"] == ["Managed IT"]
     assert out["job_details"]["rerun"]["source_job_id"] == "job-old"
+
+
+def test_queue_rerun_from_job_id_uses_redis_payload_fallback(monkeypatch):
+    monkeypatch.setattr(rerun_module, "get_job_input_payload", lambda _job_id: None)
+
+    async def _fake_get_payload(_job_id):
+        return {"metadata": {"business_name": "Acme"}, "user_data": {}}
+
+    monkeypatch.setattr(rerun_module, "get_payload", _fake_get_payload)
+    monkeypatch.setattr(rerun_module, "queue_rerun_from_payload", lambda *_args, **_kwargs: "new-job-id")
+
+    out = rerun_module.queue_rerun_from_job_id("job-old")
+    assert out == "new-job-id"

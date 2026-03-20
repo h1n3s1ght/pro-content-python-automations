@@ -365,7 +365,13 @@ def rerun_delivery(
             source_delivery_id=str(delivery_id),
         )
     except LookupError:
-        raise HTTPException(status_code=404, detail="missing rerun source payload")
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "missing rerun source payload for this delivery job; "
+                "this usually means it was created before source capture was enabled"
+            ),
+        )
     return _render_row(request, session, row, rerun_job_id=new_job_id)
 
 
