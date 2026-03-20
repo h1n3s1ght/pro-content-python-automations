@@ -8,7 +8,7 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from fastapi import Query
+from fastapi import Body, Query
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,7 @@ from .delivery_schemas import (
     DeliveryOutboxSchema,
     DeliveryVersionsResponse,
     OverrideURLRequest,
+    RerunRequest,
     RerunResponse,
     SendNowResponse,
     SendVersionRequest,
@@ -589,13 +590,18 @@ def admin_send_version(
 def admin_rerun_delivery(
     delivery_id: UUID,
     tier: str | None = Query(default=None),
+    payload: RerunRequest | None = Body(default=None),
     session: Session = Depends(get_db_session),
 ):
     tier_name = normalize_delivery_tier(tier)
     row = _fetch_delivery_row(session, delivery_id, tier=tier_name)
     source_job_id = str(row.get("job_id") or "").strip()
     try:
-        new_job_id = queue_rerun_from_job_id(source_job_id)
+        new_job_id = queue_rerun_from_job_id(
+            source_job_id,
+            rerun_request=payload,
+            source_delivery_id=str(delivery_id),
+        )
     except LookupError:
         raise HTTPException(status_code=404, detail="missing rerun source payload")
     return RerunResponse(ok=True, new_job_id=new_job_id, task_queued=True)
@@ -1075,6 +1081,19 @@ async def deliveries_page():
             pointer-events: none;
             user-select: none;
           }
+          .rerun-page-card{
+            border: 1px solid var(--line-soft);
+            border-radius: 12px;
+            padding: 12px;
+            background: #fff;
+          }
+          .rerun-page-card + .rerun-page-card{
+            margin-top: 10px;
+          }
+          .rerun-inline-note{
+            font-size: 12px;
+            color: var(--text-500);
+          }
         </style>
       </head>
       <body>
@@ -1227,9 +1246,9 @@ async def deliveries_page():
 	            </div>
 	          </div>
 	        </div>
-	        <div class="modal fade" id="resendDeliveryModal" tabindex="-1" aria-labelledby="resendDeliveryModalTitle" aria-hidden="true">
-	          <div class="modal-dialog modal-dialog-centered">
-	            <div class="modal-content">
+        <div class="modal fade" id="resendDeliveryModal" tabindex="-1" aria-labelledby="resendDeliveryModalTitle" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
 	              <div class="modal-header">
 	                <h5 class="modal-title" id="resendDeliveryModalTitle">Re-send Delivery</h5>
 	                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -1253,12 +1272,60 @@ async def deliveries_page():
 	                  <button type="submit" class="btn btn-primary" id="resendConfirmBtn" disabled>Re-send</button>
 	                </div>
 	              </form>
-	            </div>
-	          </div>
-	        </div>
-	        <div class="modal fade send-success-modal" id="sendSuccessModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="false" data-bs-keyboard="false">
-	          <div class="modal-dialog modal-sm modal-dialog-centered">
-	            <div class="modal-content">
+            </div>
+          </div>
+        </div>
+        <div class="modal fade" id="rerunModeModal" tabindex="-1" aria-labelledby="rerunModeModalTitle" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="rerunModeModalTitle">Re-run Copy</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <div class="modal-body">
+                <p class="mb-2">Choose how to re-run copy for <strong id="rerunModeClientName"></strong>.</p>
+                <p class="text-muted small mb-0">A new job and version will be created.</p>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-outline-primary" id="rerunWithoutChangesBtn">Without Changes</button>
+                <button type="button" class="btn btn-primary" id="rerunAddChangesBtn">Add Changes</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal fade" id="rerunChangesModal" tabindex="-1" aria-labelledby="rerunChangesModalTitle" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="rerunChangesModalTitle">Re-run Copy With Changes</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+              <form id="rerunChangesForm">
+                <div class="modal-body">
+                  <p class="mb-2">Client: <strong id="rerunChangesClientName"></strong></p>
+                  <div class="mb-3">
+                    <label class="form-label" for="rerunSpecificInstructions">Specific Instructions (Optional)</label>
+                    <textarea id="rerunSpecificInstructions" class="form-control" rows="3" placeholder="Example: update brand voice to be more concise and technical."></textarea>
+                  </div>
+                  <div id="rerunNewPagesContainer"></div>
+                  <div class="d-flex align-items-center justify-content-between mt-3">
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="rerunAddPageBtn">Add New Page</button>
+                    <span class="rerun-inline-note">Path and Title are required for each added page.</span>
+                  </div>
+                  <div id="rerunChangesError" class="alert alert-danger py-2 mt-3 d-none"></div>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-outline-secondary" id="rerunBackBtn">Back</button>
+                  <button type="submit" class="btn btn-primary" id="rerunSubmitChangesBtn">Queue Re-run</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+        <div class="modal fade send-success-modal" id="sendSuccessModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="false" data-bs-keyboard="false">
+          <div class="modal-dialog modal-sm modal-dialog-centered">
+            <div class="modal-content">
 	              <div class="modal-body py-3">
 	                <div class="fw-semibold mb-1">Delivery submitted</div>
 	                <div class="text-muted small mb-3">Your send request was queued successfully.</div>
@@ -1287,12 +1354,15 @@ async def deliveries_page():
 	          const sortButtons = Array.from(document.querySelectorAll(".sort-trigger[data-sort-key]"));
 	          const flashMessage = document.getElementById("flashMessage");
 	          const removeModalEl = document.getElementById("removeDeliveryModal");
-	          const resendModalEl = document.getElementById("resendDeliveryModal");
-	          const sendSuccessModalEl = document.getElementById("sendSuccessModal");
-	          const sendSuccessProgressBar = document.getElementById("sendSuccessProgressBar");
-	          const removeForm = document.getElementById("removeDeliveryForm");
-	          const resendForm = document.getElementById("resendDeliveryForm");
-	          const removeDeliveryId = document.getElementById("removeDeliveryId");
+          const resendModalEl = document.getElementById("resendDeliveryModal");
+          const rerunModeModalEl = document.getElementById("rerunModeModal");
+          const rerunChangesModalEl = document.getElementById("rerunChangesModal");
+          const sendSuccessModalEl = document.getElementById("sendSuccessModal");
+          const sendSuccessProgressBar = document.getElementById("sendSuccessProgressBar");
+          const removeForm = document.getElementById("removeDeliveryForm");
+          const resendForm = document.getElementById("resendDeliveryForm");
+          const rerunChangesForm = document.getElementById("rerunChangesForm");
+          const removeDeliveryId = document.getElementById("removeDeliveryId");
 	          const removeDeliveryTier = document.getElementById("removeDeliveryTier");
 	          const removeDeliveryAdminActions = document.getElementById("removeDeliveryAdminActions");
 	          const removeExpectedClientName = document.getElementById("removeExpectedClientName");
@@ -1305,14 +1375,26 @@ async def deliveries_page():
 	          const resendExpectedClientName = document.getElementById("resendExpectedClientName");
 	          const resendDeliveryClientName = document.getElementById("resendDeliveryClientName");
 	          const resendDeliveryUrl = document.getElementById("resendDeliveryUrl");
-	          const resendConfirmName = document.getElementById("resendConfirmName");
-	          const resendConfirmBtn = document.getElementById("resendConfirmBtn");
-	          const resendConfirmError = document.getElementById("resendConfirmError");
-	          const removeModal = new bootstrap.Modal(removeModalEl);
-	          const resendModal = resendModalEl ? new bootstrap.Modal(resendModalEl) : null;
-	          const sendSuccessModal = sendSuccessModalEl
-	            ? new bootstrap.Modal(sendSuccessModalEl, {backdrop: false, keyboard: false})
-	            : null;
+          const resendConfirmName = document.getElementById("resendConfirmName");
+          const resendConfirmBtn = document.getElementById("resendConfirmBtn");
+          const resendConfirmError = document.getElementById("resendConfirmError");
+          const rerunModeClientName = document.getElementById("rerunModeClientName");
+          const rerunChangesClientName = document.getElementById("rerunChangesClientName");
+          const rerunWithoutChangesBtn = document.getElementById("rerunWithoutChangesBtn");
+          const rerunAddChangesBtn = document.getElementById("rerunAddChangesBtn");
+          const rerunBackBtn = document.getElementById("rerunBackBtn");
+          const rerunSpecificInstructions = document.getElementById("rerunSpecificInstructions");
+          const rerunNewPagesContainer = document.getElementById("rerunNewPagesContainer");
+          const rerunAddPageBtn = document.getElementById("rerunAddPageBtn");
+          const rerunChangesError = document.getElementById("rerunChangesError");
+          const rerunSubmitChangesBtn = document.getElementById("rerunSubmitChangesBtn");
+          const removeModal = new bootstrap.Modal(removeModalEl);
+          const resendModal = resendModalEl ? new bootstrap.Modal(resendModalEl) : null;
+          const rerunModeModal = rerunModeModalEl ? new bootstrap.Modal(rerunModeModalEl) : null;
+          const rerunChangesModal = rerunChangesModalEl ? new bootstrap.Modal(rerunChangesModalEl) : null;
+          const sendSuccessModal = sendSuccessModalEl
+            ? new bootstrap.Modal(sendSuccessModalEl, {backdrop: false, keyboard: false})
+            : null;
 	          const adminParams = new URLSearchParams(window.location.search);
 	          const isAdminActions = adminParams.get("adminActions") === "true" || adminParams.get("adminAction") === "true";
 		          const FILTER_COOKIE = "ui_deliveries_filters_v1";
@@ -1329,11 +1411,17 @@ async def deliveries_page():
 		          const STATUS_KEYS = Object.keys(STATUS_LABELS);
 	          const SENDABLE_STATUSES = new Set(["COMPLETED_PENDING_SEND", "READY", "READY_TO_SEND"]);
 	          const RESENDABLE_STATUSES = new Set(["FAILED", "SENT"]);
-	          let activeSortKey = null;
-	          let activeSortDir = "asc";
-	          let rawItems = [];
-	          let sendSuccessTimer = null;
-	          const versionCache = new Map();
+          let activeSortKey = null;
+          let activeSortDir = "asc";
+          let rawItems = [];
+          let sendSuccessTimer = null;
+          const versionCache = new Map();
+          const rerunState = {
+            deliveryId: "",
+            tier: "pro",
+            clientName: "",
+            pageIndex: 0,
+          };
 
 	          if (isAdminActions) {
 	            document.body.classList.add("admin-actions-enabled");
@@ -1807,20 +1895,191 @@ async def deliveries_page():
 		            await queueDelivery(id, tier, {replay: false});
 		          }
 
-	          async function rerunCopy(id, tier, encodedClientName){
-	            const clientName = decodeURIComponent(encodedClientName || "");
-	            const ok = confirm(`Re-run copy generation for ${clientName || "this client"}? This will queue a new job and create a new version.`);
-	            if (!ok) return;
-	            const params = new URLSearchParams();
-	            params.set("tier", tier);
-	            try {
-	              const data = await apiJSON(`/ui/admin/deliveries/${id}/rerun?${params.toString()}`, { method: "POST" });
-	              const newJobId = String(data?.new_job_id || "").trim();
-	              alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
-	            } catch (_) {
-	              alert("Failed to queue re-run. Make sure admin auth is valid.");
-	            }
-	          }
+          function normalizeRerunPath(value){
+            const raw = String(value || "").trim().replace(/\\\\/g, "/");
+            if (!raw) return "";
+            const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+            const parts = withSlash.split("/").filter(Boolean);
+            return `/${parts.join("/")}`.toLowerCase();
+          }
+
+          function createNewPageSection(){
+            rerunState.pageIndex += 1;
+            const idx = rerunState.pageIndex;
+            const wrapper = document.createElement("div");
+            wrapper.className = "rerun-page-card";
+            wrapper.dataset.pageIndex = String(idx);
+            wrapper.innerHTML = `
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <strong>New Page ${idx}</strong>
+                <button type="button" class="btn btn-outline-danger btn-sm rerun-remove-page">Remove</button>
+              </div>
+              <div class="row g-2">
+                <div class="col-md-4">
+                  <label class="form-label mb-1">Path (Slug) *</label>
+                  <input type="text" class="form-control form-control-sm rerun-page-path" placeholder="/service/new-page" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label mb-1">Title *</label>
+                  <input type="text" class="form-control form-control-sm rerun-page-title" placeholder="New Page Title" required />
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label mb-1">Classification</label>
+                  <select class="form-select form-select-sm rerun-page-classification">
+                    <option value="">(auto)</option>
+                    <option value="seo">seo</option>
+                    <option value="utility">utility</option>
+                  </select>
+                </div>
+                <div class="col-md-6 d-none rerun-seo-subtype-wrap">
+                  <label class="form-label mb-1">SEO Type *</label>
+                  <select class="form-select form-select-sm rerun-page-seo-subtype">
+                    <option value="">Select SEO type</option>
+                    <option value="service">service</option>
+                    <option value="location">location</option>
+                    <option value="industry">industry</option>
+                  </select>
+                </div>
+                <div class="col-md-6 d-none rerun-utility-subtype-wrap">
+                  <label class="form-label mb-1">Utility Type *</label>
+                  <select class="form-select form-select-sm rerun-page-utility-subtype">
+                    <option value="">Select utility type</option>
+                    <option value="meet-the-team">meet-the-team</option>
+                    <option value="why-choose-us">why-choose-us</option>
+                  </select>
+                </div>
+              </div>
+            `;
+
+            const classification = wrapper.querySelector(".rerun-page-classification");
+            const seoWrap = wrapper.querySelector(".rerun-seo-subtype-wrap");
+            const utilityWrap = wrapper.querySelector(".rerun-utility-subtype-wrap");
+            const seoSubtype = wrapper.querySelector(".rerun-page-seo-subtype");
+            const utilitySubtype = wrapper.querySelector(".rerun-page-utility-subtype");
+            const removeBtn = wrapper.querySelector(".rerun-remove-page");
+
+            classification.addEventListener("change", () => {
+              const cls = String(classification.value || "").trim().toLowerCase();
+              if (cls === "seo"){
+                seoWrap.classList.remove("d-none");
+                utilityWrap.classList.add("d-none");
+                utilitySubtype.value = "";
+              } else if (cls === "utility"){
+                utilityWrap.classList.remove("d-none");
+                seoWrap.classList.add("d-none");
+                seoSubtype.value = "";
+              } else {
+                seoWrap.classList.add("d-none");
+                utilityWrap.classList.add("d-none");
+                seoSubtype.value = "";
+                utilitySubtype.value = "";
+              }
+            });
+
+            removeBtn.addEventListener("click", () => {
+              wrapper.remove();
+            });
+            return wrapper;
+          }
+
+          function showRerunError(message){
+            if (!rerunChangesError) return;
+            rerunChangesError.textContent = message;
+            rerunChangesError.classList.remove("d-none");
+          }
+
+          function clearRerunError(){
+            if (!rerunChangesError) return;
+            rerunChangesError.textContent = "";
+            rerunChangesError.classList.add("d-none");
+          }
+
+          function resetRerunChangesForm(){
+            if (rerunSpecificInstructions) rerunSpecificInstructions.value = "";
+            if (rerunNewPagesContainer) rerunNewPagesContainer.innerHTML = "";
+            rerunState.pageIndex = 0;
+            clearRerunError();
+          }
+
+          function collectRerunNewPages(){
+            const pages = [];
+            const cards = Array.from(document.querySelectorAll(".rerun-page-card"));
+            for (const card of cards){
+              const pathInput = card.querySelector(".rerun-page-path");
+              const titleInput = card.querySelector(".rerun-page-title");
+              const classificationInput = card.querySelector(".rerun-page-classification");
+              const seoSubtypeInput = card.querySelector(".rerun-page-seo-subtype");
+              const utilitySubtypeInput = card.querySelector(".rerun-page-utility-subtype");
+
+              const path = normalizeRerunPath(pathInput?.value);
+              const title = String(titleInput?.value || "").trim();
+              const classification = String(classificationInput?.value || "").trim().toLowerCase();
+              const seoSubtype = String(seoSubtypeInput?.value || "").trim().toLowerCase();
+              const utilitySubtype = String(utilitySubtypeInput?.value || "").trim().toLowerCase();
+
+              if (!path){
+                throw new Error("Each added page requires Path (Slug).");
+              }
+              if (!title){
+                throw new Error("Each added page requires Title.");
+              }
+              if (classification === "seo" && !seoSubtype){
+                throw new Error(`SEO type is required for ${path}.`);
+              }
+              if (classification === "utility" && !utilitySubtype){
+                throw new Error(`Utility type is required for ${path}.`);
+              }
+              pages.push({
+                path,
+                title,
+                classification,
+                seo_subtype: seoSubtype || null,
+                utility_subtype: utilitySubtype || null,
+              });
+            }
+            return pages;
+          }
+
+          async function submitRerunRequest(mode, payload = {}){
+            const id = rerunState.deliveryId;
+            const tier = rerunState.tier || "pro";
+            if (!id){
+              alert("Missing delivery id for rerun.");
+              return false;
+            }
+            const params = new URLSearchParams();
+            params.set("tier", tier);
+            const body = Object.assign({mode}, payload || {});
+            try {
+              const data = await apiJSON(`/ui/admin/deliveries/${id}/rerun?${params.toString()}`, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(body),
+              });
+              const newJobId = String(data?.new_job_id || "").trim();
+              alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
+              await loadDeliveries();
+              return true;
+            } catch (_) {
+              alert("Failed to queue re-run. Make sure admin auth is valid.");
+              return false;
+            }
+          }
+
+          function openRerunModeModal(id, tier, encodedClientName){
+            const clientName = decodeURIComponent(encodedClientName || "");
+            rerunState.deliveryId = String(id || "");
+            rerunState.tier = String(tier || "pro").toLowerCase() === "express" ? "express" : "pro";
+            rerunState.clientName = clientName;
+            if (rerunModeClientName) rerunModeClientName.textContent = clientName || "this client";
+            if (rerunChangesClientName) rerunChangesClientName.textContent = clientName || "this client";
+            resetRerunChangesForm();
+            if (rerunModeModal) rerunModeModal.show();
+          }
+
+          async function rerunCopy(id, tier, encodedClientName){
+            openRerunModeModal(id, tier, encodedClientName);
+          }
 
 	          async function deleteDelivery(id, tier){
 	            const ok = confirm("Delete this FAILED delivery? It will be removed from the list.");
@@ -1935,11 +2194,11 @@ async def deliveries_page():
 	              resendConfirmError.textContent = "";
 	            });
 	          }
-	          resendForm.addEventListener("submit", async (event) => {
-	            event.preventDefault();
-	            if (resendConfirmName.value !== resendExpectedClientName.value){
-	              validateResendModalInput();
-	              return;
+          resendForm.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            if (resendConfirmName.value !== resendExpectedClientName.value){
+              validateResendModalInput();
+              return;
 	            }
 	            const id = resendDeliveryId.value;
 	            const tier = resendDeliveryTier.value || "pro";
@@ -1948,14 +2207,73 @@ async def deliveries_page():
 	            const sent = await queueDelivery(id, tier, {replay: true});
 	            if (sent && resendModal){
 	              resendModal.hide();
-	            } else {
-	              validateResendModalInput();
-	            }
-	          });
+            } else {
+              validateResendModalInput();
+            }
+          });
+          if (rerunWithoutChangesBtn){
+            rerunWithoutChangesBtn.addEventListener("click", async () => {
+              if (rerunModeModal) rerunModeModal.hide();
+              await submitRerunRequest("without_changes");
+            });
+          }
+          if (rerunAddChangesBtn){
+            rerunAddChangesBtn.addEventListener("click", () => {
+              clearRerunError();
+              if (rerunModeModal) rerunModeModal.hide();
+              if (rerunChangesModal) rerunChangesModal.show();
+            });
+          }
+          if (rerunBackBtn){
+            rerunBackBtn.addEventListener("click", () => {
+              if (rerunChangesModal) rerunChangesModal.hide();
+              if (rerunModeModal) rerunModeModal.show();
+            });
+          }
+          if (rerunAddPageBtn){
+            rerunAddPageBtn.addEventListener("click", () => {
+              if (!rerunNewPagesContainer) return;
+              const section = createNewPageSection();
+              rerunNewPagesContainer.appendChild(section);
+            });
+          }
+          if (rerunChangesForm){
+            rerunChangesForm.addEventListener("submit", async (event) => {
+              event.preventDefault();
+              clearRerunError();
+              try {
+                const newPages = collectRerunNewPages();
+                const payload = {
+                  specific_instructions: String(rerunSpecificInstructions?.value || "").trim(),
+                  new_pages: newPages,
+                };
+                if (rerunSubmitChangesBtn) rerunSubmitChangesBtn.disabled = true;
+                const ok = await submitRerunRequest("add_changes", payload);
+                if (ok && rerunChangesModal){
+                  rerunChangesModal.hide();
+                  resetRerunChangesForm();
+                }
+              } catch (err) {
+                showRerunError(String(err?.message || "Please fix rerun form errors."));
+              } finally {
+                if (rerunSubmitChangesBtn) rerunSubmitChangesBtn.disabled = false;
+              }
+            });
+          }
+          if (rerunModeModalEl){
+            rerunModeModalEl.addEventListener("hidden.bs.modal", () => {
+              resetRerunChangesForm();
+            });
+          }
+          if (rerunChangesModalEl){
+            rerunChangesModalEl.addEventListener("hidden.bs.modal", () => {
+              clearRerunError();
+            });
+          }
 
-	          window.sendNow = sendNow;
-	          window.deleteDelivery = deleteDelivery;
-	          window.refreshVersions = refreshVersions;
+          window.sendNow = sendNow;
+          window.deleteDelivery = deleteDelivery;
+          window.refreshVersions = refreshVersions;
 	          window.rerunCopy = rerunCopy;
 	          window.openRemoveModal = openRemoveModal;
 	          window.openResendModal = openResendModal;

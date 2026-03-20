@@ -15,6 +15,19 @@
       .table td { vertical-align: middle; }
       .url-cell { max-width: 320px; }
       .url-cell .text-truncate { max-width: 320px; }
+      .rerun-page-card {
+        border: 1px solid #dbe1ea;
+        border-radius: 12px;
+        padding: 12px;
+        background: #fff;
+      }
+      .rerun-page-card + .rerun-page-card {
+        margin-top: 10px;
+      }
+      .rerun-inline-note {
+        font-size: 12px;
+        color: #5f6b7a;
+      }
     </style>
   </head>
   <body>
@@ -100,5 +113,294 @@
         </div>
       </div>
     </div>
+    <div class="modal fade" id="adminRerunModeModal" tabindex="-1" aria-labelledby="adminRerunModeModalTitle" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="adminRerunModeModalTitle">Re-run Copy</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-2">Choose how to re-run copy for <strong id="adminRerunModeClientName"></strong>.</p>
+            <p class="text-muted small mb-0">A new job and version will be created.</p>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-outline-primary" id="adminRerunWithoutChangesBtn">Without Changes</button>
+            <button type="button" class="btn btn-primary" id="adminRerunAddChangesBtn">Add Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="adminRerunChangesModal" tabindex="-1" aria-labelledby="adminRerunChangesModalTitle" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="adminRerunChangesModalTitle">Re-run Copy With Changes</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <form id="adminRerunChangesForm">
+            <div class="modal-body">
+              <p class="mb-2">Client: <strong id="adminRerunChangesClientName"></strong></p>
+              <div class="mb-3">
+                <label class="form-label" for="adminRerunSpecificInstructions">Specific Instructions (Optional)</label>
+                <textarea id="adminRerunSpecificInstructions" class="form-control" rows="3" placeholder="Example: update brand voice to be more concise and technical."></textarea>
+              </div>
+              <div id="adminRerunNewPagesContainer"></div>
+              <div class="d-flex align-items-center justify-content-between mt-3">
+                <button type="button" class="btn btn-outline-primary btn-sm" id="adminRerunAddPageBtn">Add New Page</button>
+                <span class="rerun-inline-note">Path and Title are required for each added page.</span>
+              </div>
+              <div id="adminRerunChangesError" class="alert alert-danger py-2 mt-3 d-none"></div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" id="adminRerunBackBtn">Back</button>
+              <button type="submit" class="btn btn-primary" id="adminRerunSubmitChangesBtn">Queue Re-run</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+      const adminRerunModeModalEl = document.getElementById("adminRerunModeModal");
+      const adminRerunChangesModalEl = document.getElementById("adminRerunChangesModal");
+      const adminRerunModeClientName = document.getElementById("adminRerunModeClientName");
+      const adminRerunChangesClientName = document.getElementById("adminRerunChangesClientName");
+      const adminRerunWithoutChangesBtn = document.getElementById("adminRerunWithoutChangesBtn");
+      const adminRerunAddChangesBtn = document.getElementById("adminRerunAddChangesBtn");
+      const adminRerunBackBtn = document.getElementById("adminRerunBackBtn");
+      const adminRerunSpecificInstructions = document.getElementById("adminRerunSpecificInstructions");
+      const adminRerunNewPagesContainer = document.getElementById("adminRerunNewPagesContainer");
+      const adminRerunAddPageBtn = document.getElementById("adminRerunAddPageBtn");
+      const adminRerunChangesForm = document.getElementById("adminRerunChangesForm");
+      const adminRerunChangesError = document.getElementById("adminRerunChangesError");
+      const adminRerunSubmitChangesBtn = document.getElementById("adminRerunSubmitChangesBtn");
+      const adminRerunModeModal = adminRerunModeModalEl ? new bootstrap.Modal(adminRerunModeModalEl) : null;
+      const adminRerunChangesModal = adminRerunChangesModalEl ? new bootstrap.Modal(adminRerunChangesModalEl) : null;
+      const adminRerunState = {
+        deliveryId: "",
+        clientName: "",
+        pageIndex: 0,
+      };
+
+      function adminNormalizeRerunPath(value){
+        const raw = String(value || "").trim().replace(/\\\\/g, "/");
+        if (!raw) return "";
+        const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+        const parts = withSlash.split("/").filter(Boolean);
+        return `/${parts.join("/")}`.toLowerCase();
+      }
+
+      function adminShowRerunError(message){
+        adminRerunChangesError.textContent = message;
+        adminRerunChangesError.classList.remove("d-none");
+      }
+
+      function adminClearRerunError(){
+        adminRerunChangesError.textContent = "";
+        adminRerunChangesError.classList.add("d-none");
+      }
+
+      function adminResetRerunForm(){
+        adminRerunSpecificInstructions.value = "";
+        adminRerunNewPagesContainer.innerHTML = "";
+        adminRerunState.pageIndex = 0;
+        adminClearRerunError();
+      }
+
+      function adminNewPageSection(){
+        adminRerunState.pageIndex += 1;
+        const idx = adminRerunState.pageIndex;
+        const wrapper = document.createElement("div");
+        wrapper.className = "rerun-page-card";
+        wrapper.dataset.pageIndex = String(idx);
+        wrapper.innerHTML = `
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong>New Page ${idx}</strong>
+            <button type="button" class="btn btn-outline-danger btn-sm admin-rerun-remove-page">Remove</button>
+          </div>
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label mb-1">Path (Slug) *</label>
+              <input type="text" class="form-control form-control-sm admin-rerun-page-path" placeholder="/service/new-page" required />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label mb-1">Title *</label>
+              <input type="text" class="form-control form-control-sm admin-rerun-page-title" placeholder="New Page Title" required />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label mb-1">Classification</label>
+              <select class="form-select form-select-sm admin-rerun-page-classification">
+                <option value="">(auto)</option>
+                <option value="seo">seo</option>
+                <option value="utility">utility</option>
+              </select>
+            </div>
+            <div class="col-md-6 d-none admin-rerun-seo-subtype-wrap">
+              <label class="form-label mb-1">SEO Type *</label>
+              <select class="form-select form-select-sm admin-rerun-page-seo-subtype">
+                <option value="">Select SEO type</option>
+                <option value="service">service</option>
+                <option value="location">location</option>
+                <option value="industry">industry</option>
+              </select>
+            </div>
+            <div class="col-md-6 d-none admin-rerun-utility-subtype-wrap">
+              <label class="form-label mb-1">Utility Type *</label>
+              <select class="form-select form-select-sm admin-rerun-page-utility-subtype">
+                <option value="">Select utility type</option>
+                <option value="meet-the-team">meet-the-team</option>
+                <option value="why-choose-us">why-choose-us</option>
+              </select>
+            </div>
+          </div>
+        `;
+        const classification = wrapper.querySelector(".admin-rerun-page-classification");
+        const seoWrap = wrapper.querySelector(".admin-rerun-seo-subtype-wrap");
+        const utilityWrap = wrapper.querySelector(".admin-rerun-utility-subtype-wrap");
+        const seoSubtype = wrapper.querySelector(".admin-rerun-page-seo-subtype");
+        const utilitySubtype = wrapper.querySelector(".admin-rerun-page-utility-subtype");
+        const removeBtn = wrapper.querySelector(".admin-rerun-remove-page");
+
+        classification.addEventListener("change", () => {
+          const cls = String(classification.value || "").trim().toLowerCase();
+          if (cls === "seo"){
+            seoWrap.classList.remove("d-none");
+            utilityWrap.classList.add("d-none");
+            utilitySubtype.value = "";
+          } else if (cls === "utility"){
+            utilityWrap.classList.remove("d-none");
+            seoWrap.classList.add("d-none");
+            seoSubtype.value = "";
+          } else {
+            seoWrap.classList.add("d-none");
+            utilityWrap.classList.add("d-none");
+            seoSubtype.value = "";
+            utilitySubtype.value = "";
+          }
+        });
+        removeBtn.addEventListener("click", () => wrapper.remove());
+        return wrapper;
+      }
+
+      function adminCollectNewPages(){
+        const pages = [];
+        const cards = Array.from(document.querySelectorAll(".rerun-page-card"));
+        for (const card of cards){
+          const path = adminNormalizeRerunPath(card.querySelector(".admin-rerun-page-path")?.value);
+          const title = String(card.querySelector(".admin-rerun-page-title")?.value || "").trim();
+          const classification = String(card.querySelector(".admin-rerun-page-classification")?.value || "").trim().toLowerCase();
+          const seoSubtype = String(card.querySelector(".admin-rerun-page-seo-subtype")?.value || "").trim().toLowerCase();
+          const utilitySubtype = String(card.querySelector(".admin-rerun-page-utility-subtype")?.value || "").trim().toLowerCase();
+
+          if (!path){
+            throw new Error("Each added page requires Path (Slug).");
+          }
+          if (!title){
+            throw new Error("Each added page requires Title.");
+          }
+          if (classification === "seo" && !seoSubtype){
+            throw new Error(`SEO type is required for ${path}.`);
+          }
+          if (classification === "utility" && !utilitySubtype){
+            throw new Error(`Utility type is required for ${path}.`);
+          }
+          pages.push({
+            path,
+            title,
+            classification,
+            seo_subtype: seoSubtype || null,
+            utility_subtype: utilitySubtype || null,
+          });
+        }
+        return pages;
+      }
+
+      async function adminSubmitRerun(mode, payload = {}){
+        if (!adminRerunState.deliveryId){
+          alert("Missing delivery id for rerun.");
+          return false;
+        }
+        const resp = await fetch(`/ui/admin/deliveries/${adminRerunState.deliveryId}/rerun?tier=pro`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(Object.assign({mode}, payload || {})),
+        });
+        if (!resp.ok){
+          throw new Error(`HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        const newJobId = String(data?.new_job_id || "").trim();
+        const statusNode = document.getElementById(`rerun-status-${adminRerunState.deliveryId}`);
+        if (statusNode){
+          statusNode.textContent = newJobId ? `Queued: ${newJobId}` : "Queued";
+        }
+        alert(newJobId ? `Re-run queued: ${newJobId}` : "Re-run queued.");
+        return true;
+      }
+
+      function openAdminRerunModal(deliveryId, clientName){
+        adminRerunState.deliveryId = String(deliveryId || "").trim();
+        adminRerunState.clientName = String(clientName || "").trim();
+        adminRerunModeClientName.textContent = adminRerunState.clientName || "this client";
+        adminRerunChangesClientName.textContent = adminRerunState.clientName || "this client";
+        adminResetRerunForm();
+        if (adminRerunModeModal){
+          adminRerunModeModal.show();
+        }
+      }
+      window.openAdminRerunModal = openAdminRerunModal;
+
+      if (adminRerunWithoutChangesBtn){
+        adminRerunWithoutChangesBtn.addEventListener("click", async () => {
+          if (adminRerunModeModal) adminRerunModeModal.hide();
+          try {
+            await adminSubmitRerun("without_changes");
+          } catch (_) {
+            alert("Failed to queue re-run.");
+          }
+        });
+      }
+      if (adminRerunAddChangesBtn){
+        adminRerunAddChangesBtn.addEventListener("click", () => {
+          adminClearRerunError();
+          if (adminRerunModeModal) adminRerunModeModal.hide();
+          if (adminRerunChangesModal) adminRerunChangesModal.show();
+        });
+      }
+      if (adminRerunBackBtn){
+        adminRerunBackBtn.addEventListener("click", () => {
+          if (adminRerunChangesModal) adminRerunChangesModal.hide();
+          if (adminRerunModeModal) adminRerunModeModal.show();
+        });
+      }
+      if (adminRerunAddPageBtn){
+        adminRerunAddPageBtn.addEventListener("click", () => {
+          const section = adminNewPageSection();
+          adminRerunNewPagesContainer.appendChild(section);
+        });
+      }
+      if (adminRerunChangesForm){
+        adminRerunChangesForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          adminClearRerunError();
+          adminRerunSubmitChangesBtn.disabled = true;
+          try {
+            const pages = adminCollectNewPages();
+            await adminSubmitRerun("add_changes", {
+              specific_instructions: String(adminRerunSpecificInstructions.value || "").trim(),
+              new_pages: pages,
+            });
+            if (adminRerunChangesModal) adminRerunChangesModal.hide();
+            adminResetRerunForm();
+          } catch (err) {
+            adminShowRerunError(String(err?.message || "Please fix rerun form errors."));
+          } finally {
+            adminRerunSubmitChangesBtn.disabled = false;
+          }
+        });
+      }
+    </script>
   </body>
 </html>

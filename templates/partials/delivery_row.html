@@ -56,14 +56,14 @@
     >Mark Ready</button>
     <button
       class="btn btn-sm btn-outline-warning"
-      hx-post="/admin/deliveries/{{ delivery.id }}/rerun"
-      hx-target="#delivery-{{ delivery.id }}"
-      hx-swap="outerHTML"
-      hx-confirm="Re-run this delivery and create a new job/copy version?"
+      type="button"
+      onclick='openAdminRerunModal("{{ delivery.id }}", {{ (delivery.client_name or "")|tojson }})'
     >Re-run Copy</button>
     {% set rerun_job_id = (rerun_job_id_by_delivery_id or {}).get(delivery.id|string, "") %}
-    {% if rerun_job_id %}
-      <div class="small text-success mt-1">Queued: {{ rerun_job_id }}</div>
-    {% endif %}
+    <div id="rerun-status-{{ delivery.id }}" class="small text-success mt-1">
+      {% if rerun_job_id %}
+        Queued: {{ rerun_job_id }}
+      {% endif %}
+    </div>
   </td>
 </tr>

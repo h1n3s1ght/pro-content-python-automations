@@ -148,7 +148,7 @@ def test_admin_rerun_queues_new_job(admin_actions_client, monkeypatch):
     delivery_id = uuid4()
     rows[str(delivery_id)] = {"id": delivery_id, "job_id": "job-base", "client_name": "Acme", "status": "READY_TO_SEND"}
 
-    monkeypatch.setattr(ui_module, "queue_rerun_from_job_id", lambda _job_id: "new-job-id")
+    monkeypatch.setattr(ui_module, "queue_rerun_from_job_id", lambda *_args, **_kwargs: "new-job-id")
 
     resp = client.post(
         f"/ui/admin/deliveries/{delivery_id}/rerun?tier=pro",
@@ -159,12 +159,51 @@ def test_admin_rerun_queues_new_job(admin_actions_client, monkeypatch):
     assert resp.json() == {"ok": True, "new_job_id": "new-job-id", "task_queued": True}
 
 
+def test_admin_rerun_add_changes_payload_forwarded(admin_actions_client, monkeypatch):
+    client, rows, _queued_calls = admin_actions_client
+    delivery_id = uuid4()
+    rows[str(delivery_id)] = {"id": delivery_id, "job_id": "job-base", "client_name": "Acme", "status": "READY_TO_SEND"}
+
+    captured = {}
+
+    def _fake_queue(job_id, **kwargs):
+        captured["job_id"] = job_id
+        captured["kwargs"] = kwargs
+        return "new-job-id"
+
+    monkeypatch.setattr(ui_module, "queue_rerun_from_job_id", _fake_queue)
+
+    resp = client.post(
+        f"/ui/admin/deliveries/{delivery_id}/rerun?tier=pro",
+        headers=_admin_headers(),
+        json={
+            "mode": "add_changes",
+            "specific_instructions": "Update brand voice.",
+            "new_pages": [
+                {
+                    "path": "/service/network-audits",
+                    "title": "Network Audits",
+                    "classification": "seo",
+                    "seo_subtype": "service",
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["job_id"] == "job-base"
+    assert captured["kwargs"]["source_delivery_id"] == str(delivery_id)
+    assert captured["kwargs"]["rerun_request"] is not None
+    assert captured["kwargs"]["rerun_request"].mode == "add_changes"
+    assert len(captured["kwargs"]["rerun_request"].new_pages) == 1
+
+
 def test_admin_rerun_missing_source_returns_404(admin_actions_client, monkeypatch):
     client, rows, _queued_calls = admin_actions_client
     delivery_id = uuid4()
     rows[str(delivery_id)] = {"id": delivery_id, "job_id": "job-base", "client_name": "Acme", "status": "READY_TO_SEND"}
 
-    def _raise(_job_id):
+    def _raise(*_args, **_kwargs):
         raise LookupError("missing source")
 
     monkeypatch.setattr(ui_module, "queue_rerun_from_job_id", _raise)

@@ -43,4 +43,10 @@ def test_ui_deliveries_page_contains_website_tier_column():
     assert "Version" in resp.text
     assert "refreshVersions" in resp.text
     assert "rerunCopy" in resp.text
+    assert "id=\"rerunModeModal\"" in resp.text
+    assert "Without Changes" in resp.text
+    assert "Add Changes" in resp.text
+    assert "id=\"rerunChangesModal\"" in resp.text
+    assert "Specific Instructions (Optional)" in resp.text
+    assert "Add New Page" in resp.text
     assert "/ui/admin/deliveries/" in resp.text

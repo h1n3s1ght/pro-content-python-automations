@@ -20,7 +20,7 @@ from .copy_store import (
     list_recently_deleted_job_copies,
     soft_delete_job_copy,
 )
-from .delivery_rerun import queue_rerun_from_job_id
+from .delivery_rerun import parse_rerun_request_from_form, queue_rerun_from_job_id
 from .delivery_versions import (
     delivery_client_key,
     list_version_options_for_client,
@@ -344,11 +344,26 @@ def send_version(
 def rerun_delivery(
     request: Request,
     delivery_id: UUID,
+    mode: str = Form(default=""),
+    specific_instructions: str = Form(default=""),
+    new_pages_json: str = Form(default=""),
     session: Session = Depends(get_db_session),
 ):
     row = _get_delivery(session, delivery_id)
     try:
-        new_job_id = queue_rerun_from_job_id(row.job_id)
+        rerun_request = parse_rerun_request_from_form(
+            mode=mode,
+            specific_instructions=specific_instructions,
+            new_pages_json=new_pages_json,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        new_job_id = queue_rerun_from_job_id(
+            row.job_id,
+            rerun_request=rerun_request,
+            source_delivery_id=str(delivery_id),
+        )
     except LookupError:
         raise HTTPException(status_code=404, detail="missing rerun source payload")
     return _render_row(request, session, row, rerun_job_id=new_job_id)

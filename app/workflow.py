@@ -36,6 +36,200 @@ CAMPAIGN_PAGES: tuple[tuple[str, str], ...] = (
     ("/campaign/it-buyers-guide", "it-buyers-guide"),
 )
 
+SITEMAP_REQUIRED_HEADERS: tuple[str, ...] = (
+    "path",
+    "page_type",
+    "page_title",
+    "html_title",
+    "meta_description",
+    "index",
+    "follow",
+    "canonical",
+    "sort_order",
+    "locale",
+    "notes",
+    "generative_content",
+    "content_page_type",
+    "navigation_category",
+    "navigation_label",
+)
+
+_SEO_NAV_CATEGORY = {
+    "seo-service": "service",
+    "seo-industry": "industry",
+    "seo-location": "location",
+}
+
+
+def _clean_str(value: Any) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _normalize_path(value: Any) -> str:
+    raw = _clean_str(value).replace("\\", "/")
+    if not raw:
+        return "/"
+    if not raw.startswith("/"):
+        raw = f"/{raw}"
+    parts = [part for part in raw.split("/") if part]
+    return f"/{'/'.join(parts)}".lower()
+
+
+def _rerun_overrides(user_data: Dict[str, Any]) -> Dict[str, Any]:
+    raw = user_data.get("rerun_overrides")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _rerun_specific_instructions(user_data: Dict[str, Any]) -> str:
+    return _clean_str(_rerun_overrides(user_data).get("specific_instructions"))
+
+
+def _rerun_added_pages(user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = _rerun_overrides(user_data).get("added_pages")
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(dict(item))
+    return out
+
+
+def _nav_category_for_content_type(content_page_type: str) -> str:
+    cpt = _clean_str(content_page_type).lower()
+    if cpt in _SEO_NAV_CATEGORY:
+        return _SEO_NAV_CATEGORY[cpt]
+    if cpt in {"about-team", "about-why"}:
+        return "primary"
+    return "service"
+
+
+def _page_type_for_content_type(content_page_type: str) -> str:
+    cpt = _clean_str(content_page_type).lower()
+    if cpt in {"about-team", "about-why"}:
+        return "utility"
+    if cpt.startswith("seo-"):
+        return "seo"
+    return "seo"
+
+
+def _normalize_sitemap_row_shape(
+    row: Dict[str, Any],
+    *,
+    locale_default: str,
+    sort_order: int,
+) -> Dict[str, Any]:
+    out = dict(row if isinstance(row, dict) else {})
+    path = _normalize_path(out.get("path"))
+    content_page_type = _clean_str(out.get("content_page_type"))
+    page_title = _clean_str(out.get("page_title") or out.get("html_title"))
+    html_title = _clean_str(out.get("html_title") or page_title)
+
+    out["path"] = path
+    out["page_type"] = _clean_str(out.get("page_type")) or _page_type_for_content_type(content_page_type)
+    out["page_title"] = page_title
+    out["html_title"] = html_title
+    out["meta_description"] = _clean_str(out.get("meta_description"))
+    out["index"] = bool(out.get("index", True))
+    out["follow"] = bool(out.get("follow", True))
+    out["canonical"] = _clean_str(out.get("canonical") or path)
+    out["sort_order"] = int(sort_order)
+    out["locale"] = _clean_str(out.get("locale") or locale_default or "en-US")
+    out["notes"] = _clean_str(out.get("notes"))
+    out["generative_content"] = bool(out.get("generative_content", True))
+    out["content_page_type"] = content_page_type
+    out["navigation_category"] = _clean_str(out.get("navigation_category") or _nav_category_for_content_type(content_page_type))
+    out["navigation_label"] = _clean_str(out.get("navigation_label") or page_title)
+
+    # Keep only required schema keys to avoid malformed merged rows.
+    return {key: out.get(key) for key in SITEMAP_REQUIRED_HEADERS}
+
+
+def _build_added_page_row(
+    page: Dict[str, Any],
+    *,
+    locale_default: str,
+    sort_order: int,
+) -> Dict[str, Any]:
+    path = _normalize_path(page.get("path"))
+    title = _clean_str(page.get("title"))
+    content_page_type = _clean_str(page.get("content_page_type"))
+    row = {
+        "path": path,
+        "page_type": _page_type_for_content_type(content_page_type),
+        "page_title": title,
+        "html_title": title,
+        "meta_description": "",
+        "index": True,
+        "follow": True,
+        "canonical": path,
+        "sort_order": sort_order,
+        "locale": locale_default or "en-US",
+        "notes": "added via rerun override",
+        "generative_content": True,
+        "content_page_type": content_page_type,
+        "navigation_category": _nav_category_for_content_type(content_page_type),
+        "navigation_label": title,
+    }
+    return _normalize_sitemap_row_shape(row, locale_default=locale_default, sort_order=sort_order)
+
+
+def merge_rerun_added_pages_into_sitemap(
+    sitemap_data: Dict[str, Any],
+    *,
+    added_pages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    out = dict(sitemap_data if isinstance(sitemap_data, dict) else {})
+    rows_raw = out.get("rows")
+    rows: List[Dict[str, Any]] = [dict(item) for item in rows_raw if isinstance(item, dict)] if isinstance(rows_raw, list) else []
+
+    if not added_pages:
+        return out
+
+    meta = out.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    locale_default = _clean_str(meta.get("locale"))
+    if not locale_default and rows:
+        locale_default = _clean_str(rows[0].get("locale"))
+    if not locale_default:
+        locale_default = "en-US"
+
+    by_path: dict[str, int] = {}
+    normalized_rows: List[Dict[str, Any]] = []
+    for idx, row in enumerate(rows, start=1):
+        normalized = _normalize_sitemap_row_shape(row, locale_default=locale_default, sort_order=idx)
+        normalized_rows.append(normalized)
+        by_path[_normalize_path(normalized.get("path"))] = len(normalized_rows) - 1
+
+    for page in added_pages:
+        path = _normalize_path(page.get("path"))
+        built = _build_added_page_row(page, locale_default=locale_default, sort_order=len(normalized_rows) + 1)
+        existing_idx = by_path.get(path)
+        if existing_idx is not None:
+            normalized_rows[existing_idx] = built
+        else:
+            normalized_rows.append(built)
+            by_path[path] = len(normalized_rows) - 1
+
+    for idx, row in enumerate(normalized_rows, start=1):
+        row["sort_order"] = idx
+        row["locale"] = _clean_str(row.get("locale") or locale_default)
+        row["canonical"] = _clean_str(row.get("canonical") or row.get("path"))
+
+    counts = meta.get("counts")
+    if not isinstance(counts, dict):
+        counts = {}
+    counts["total_rows"] = len(normalized_rows)
+    counts["counted_pages"] = len(normalized_rows)
+    counts["excluded_pages"] = 0
+    meta["counts"] = counts
+    meta["locale"] = locale_default
+    out["meta"] = meta
+    out["headers"] = list(SITEMAP_REQUIRED_HEADERS)
+    out["rows"] = normalized_rows
+    return out
+
 
 async def _ensure_can_continue(job_id: Optional[str]) -> None:
     if not job_id:
@@ -212,6 +406,8 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
         or webhook_payload.get("userData")
         or {}
     )
+    if not isinstance(user_data, dict):
+        user_data = {}
     job_details = webhook_payload.get("job_details") or webhook_payload.get("jobDetails") or {}
     stamp = datetime_cst_stamp()
 
@@ -261,6 +457,10 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     sitemap_data = webhook_payload.get("sitemap_data")
     sitemap_log_lines: List[str] = []
     sitemap_source = "generated"
+    rerun_added_pages = _rerun_added_pages(user_data)
+    specific_instructions = _rerun_specific_instructions(user_data)
+    if specific_instructions:
+        user_data["specific_instructions"] = specific_instructions
     if not sitemap_data:
         sitemap_data = await generate_sitemap(
             metadata=metadata,
@@ -285,6 +485,13 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
     if sitemap_log_lines:
         for line in sitemap_log_lines:
             await log_d(line)
+
+    if rerun_added_pages and isinstance(sitemap_data, dict):
+        sitemap_data = merge_rerun_added_pages_into_sitemap(
+            sitemap_data,
+            added_pages=rerun_added_pages,
+        )
+        await log_i(f"rerun_added_pages_merged: count={len(rerun_added_pages)}")
 
     seo_keywords: List[str] = []
 
@@ -329,6 +536,9 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
 
     user_data_for_copy = dict(user_data or {})
     user_data_for_copy["seo_keywords"] = seo_keywords
+    if specific_instructions:
+        user_data_for_copy["specific_instructions"] = specific_instructions
+        await log_i("rerun_specific_instructions_applied")
 
     async def run_page(page: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         path = page.get("path", "")
@@ -336,8 +546,11 @@ async def run_workflow(webhook_payload: Dict[str, Any], job_id: Optional[str] = 
             await _ensure_can_continue(job_id)
             await prog({"current": path})
             await log_i(f"page_start: {path}")
+            metadata_for_copy = dict(metadata or {})
+            if specific_instructions:
+                metadata_for_copy["specific_instructions"] = specific_instructions
             payload = {
-                "metadata": metadata,
+                "metadata": metadata_for_copy,
                 "userdata": user_data_for_copy,
                 "sitemap_data": sitemap_data,
                 "this_page": page,
