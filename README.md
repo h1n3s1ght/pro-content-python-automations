@@ -17,6 +17,17 @@ Canonical internal field names remain `snake_case` for storage and downstream pr
 - If you are *not* using Docker, you can use `scripts/start_render.sh` as a start command (it runs `alembic upgrade head` before Uvicorn).
 - Or: open a Render shell and run `alembic -c /app/alembic.ini upgrade head` manually.
 
+### Render pre-deploy command (recommended)
+
+Set Render **Pre-Deploy Command** to:
+
+`./scripts/predeploy_render.sh`
+
+This command:
+- verifies DB connectivity (`SELECT 1`)
+- auto-resizes `alembic_version.version_num` when legacy DBs still use `varchar(32)`
+- runs `alembic upgrade head` before the new web process goes live
+
 ## Delivery outbox
 
 - `DELIVERY_BASE_URL_TEMPLATE` (required if `job_details.base_url` is missing). Example: `https://{slug}.example.com`

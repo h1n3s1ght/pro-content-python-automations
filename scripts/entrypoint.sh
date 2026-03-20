@@ -81,6 +81,24 @@ with psycopg.connect(dsn) as conn:
     with conn.cursor() as cur:
         cur.execute("SELECT pg_advisory_lock(%s)", (LOCK_ID,))
     try:
+        # Preflight: some legacy/shared DBs have alembic_version.version_num as varchar(32),
+        # which can fail on longer revision IDs. Widen it once before migration.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT character_maximum_length
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'alembic_version'
+                  AND column_name = 'version_num'
+                """
+            )
+            row = cur.fetchone()
+            max_len = int(row[0]) if row and row[0] is not None else None
+            if max_len is not None and max_len < 255:
+                print(f"migrations_preflight_alembic_version_resize from={max_len} to=255", flush=True)
+                cur.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)")
+
         print("migrations_start", flush=True)
         subprocess.check_call(["alembic", "-c", cfg, "upgrade", "head"])
         print("migrations_ok", flush=True)

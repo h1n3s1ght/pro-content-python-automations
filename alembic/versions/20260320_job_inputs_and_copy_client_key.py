@@ -1,6 +1,6 @@
 """add job_inputs and job_copies.client_key
 
-Revision ID: 20260320_job_inputs_and_copy_client_key
+Revision ID: 20260320_job_inputs_client_key
 Revises: 20260302_express_tables
 Create Date: 2026-03-20 00:00:00.000000
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy import inspect, text
 from sqlalchemy.dialects import postgresql
 
-revision = "20260320_job_inputs_and_copy_client_key"
+revision = "20260320_job_inputs_client_key"
 down_revision = "20260302_express_tables"
 branch_labels = None
 depends_on = None
@@ -88,4 +88,3 @@ def downgrade() -> None:
         if _index_exists("job_inputs", "ix_job_inputs_client_key"):
             op.drop_index("ix_job_inputs_client_key", table_name="job_inputs")
         op.drop_table("job_inputs")
-

@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+if [[ -d "/app" && -f "/app/alembic.ini" ]]; then
+  ROOT_DIR="/app"
+else
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+fi
 cd "${ROOT_DIR}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "DATABASE_URL is not set; refusing to run migrations." >&2
+  echo "DATABASE_URL is not set; pre-deploy check failed." >&2
   exit 1
 fi
 
-# Preflight: widen alembic_version.version_num if this DB still uses varchar(32).
 python3 - <<'PY'
 import os
 import psycopg
@@ -25,6 +28,7 @@ elif dsn.startswith("postgres://"):
 with psycopg.connect(dsn) as conn:
     conn.autocommit = True
     with conn.cursor() as cur:
+        cur.execute("SELECT 1")
         cur.execute(
             """
             SELECT character_maximum_length
@@ -37,10 +41,11 @@ with psycopg.connect(dsn) as conn:
         row = cur.fetchone()
         max_len = int(row[0]) if row and row[0] is not None else None
         if max_len is not None and max_len < 255:
-            print(f"preflight_alembic_version_resize from={max_len} to=255", flush=True)
+            print(f"predeploy_alembic_version_resize from={max_len} to=255", flush=True)
             cur.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)")
+print("predeploy_db_ok", flush=True)
 PY
 
-alembic upgrade head
+alembic -c "${ALEMBIC_INI:-${ROOT_DIR}/alembic.ini}" upgrade head
+echo "predeploy_migrations_ok"
 
-exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
