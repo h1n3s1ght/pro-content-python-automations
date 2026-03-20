@@ -132,3 +132,20 @@ def test_queue_rerun_from_job_id_uses_s3_client_form_fallback(monkeypatch):
 
     out = rerun_module.queue_rerun_from_job_id("job-old", client_name="Banks Consulting Northwest")
     assert out == "new-job-id"
+
+
+def test_queue_rerun_from_job_id_swallows_s3_lookup_exceptions(monkeypatch):
+    monkeypatch.setattr(rerun_module, "get_job_input_payload", lambda _job_id: None)
+
+    async def _fake_get_payload(_job_id):
+        return None
+
+    monkeypatch.setattr(rerun_module, "get_payload", _fake_get_payload)
+
+    def _raise(**_kwargs):
+        raise RuntimeError("s3 error")
+
+    monkeypatch.setattr(rerun_module, "find_latest_client_form_payload", _raise)
+
+    with pytest.raises(LookupError):
+        rerun_module.queue_rerun_from_job_id("job-old", client_name="Banks Consulting Northwest")

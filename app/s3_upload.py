@@ -102,17 +102,26 @@ def _parse_client_form_ts(ts: str) -> datetime:
 def _list_keys_for_prefix(*, bucket: str, prefix: str, limit: int) -> list[dict]:
     paginator = _s3.get_paginator("list_objects_v2")
     out: list[dict] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        contents = page.get("Contents") or []
-        for item in contents:
-            if not isinstance(item, dict):
-                continue
-            key = str(item.get("Key") or "")
-            if not key:
-                continue
-            out.append(item)
-            if len(out) >= limit:
-                return out
+    try:
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            contents = page.get("Contents") or []
+            for item in contents:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("Key") or "")
+                if not key:
+                    continue
+                out.append(item)
+                if len(out) >= limit:
+                    return out
+    except Exception as exc:
+        logger.warning(
+            "s3_client_form_list_failed bucket=%s prefix=%s err=%s",
+            bucket,
+            prefix,
+            exc,
+        )
+        return []
     return out
 
 
@@ -275,27 +284,37 @@ def find_latest_client_form_payload(
     if scan_limit < 1:
         scan_limit = 1
 
-    # Fast-path: exact prefix in expected filename format.
-    exact_prefix = f"{prefix_root}{safe_name}_"
-    fast_items = _list_keys_for_prefix(bucket=bucket_name, prefix=exact_prefix, limit=scan_limit)
-    latest = _pick_latest_client_form_object(fast_items)
+    try:
+        # Fast-path: exact prefix in expected filename format.
+        exact_prefix = f"{prefix_root}{safe_name}_"
+        fast_items = _list_keys_for_prefix(bucket=bucket_name, prefix=exact_prefix, limit=scan_limit)
+        latest = _pick_latest_client_form_object(fast_items)
 
-    # Fallback: broader scan with name-signature matching.
-    if latest is None:
-        broad_items = _list_keys_for_prefix(bucket=bucket_name, prefix=prefix_root, limit=scan_limit)
-        latest = _pick_latest_client_form_object(broad_items, expected_signature=signature)
+        # Fallback: broader scan with name-signature matching.
+        if latest is None:
+            broad_items = _list_keys_for_prefix(bucket=bucket_name, prefix=prefix_root, limit=scan_limit)
+            latest = _pick_latest_client_form_object(broad_items, expected_signature=signature)
 
-    if latest is None:
+        if latest is None:
+            return None
+
+        key = str(latest.get("Key") or "").strip()
+        if not key:
+            return None
+
+        payload = download_json(key, bucket=bucket_name)
+        if not isinstance(payload, dict):
+            return None
+        return key, payload
+    except Exception as exc:
+        logger.warning(
+            "s3_client_form_lookup_failed client_name=%s bucket=%s prefix=%s err=%s",
+            name,
+            bucket_name,
+            prefix_root,
+            exc,
+        )
         return None
-
-    key = str(latest.get("Key") or "").strip()
-    if not key:
-        return None
-
-    payload = download_json(key, bucket=bucket_name)
-    if not isinstance(payload, dict):
-        return None
-    return key, payload
 
 
 def head_object_info(key: str) -> Dict[str, Any] | None:

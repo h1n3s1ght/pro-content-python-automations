@@ -263,7 +263,10 @@ def queue_rerun_from_job_id(
             payload = redis_payload
     if not isinstance(payload, dict):
         # Final fallback: retrieve latest source payload from S3 client-form archive.
-        s3_match = find_latest_client_form_payload(client_name=str(client_name or "").strip())
+        try:
+            s3_match = find_latest_client_form_payload(client_name=str(client_name or "").strip())
+        except Exception:
+            s3_match = None
         if isinstance(s3_match, tuple) and len(s3_match) == 2 and isinstance(s3_match[1], dict):
             payload = s3_match[1]
     if not isinstance(payload, dict):
