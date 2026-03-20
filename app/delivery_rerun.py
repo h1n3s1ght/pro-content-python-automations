@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .delivery_schemas import RerunRequest
 from .job_input_store import get_job_input_payload, upsert_job_input
+from .s3_upload import find_latest_client_form_payload
 from .storage import get_payload, register_job, set_payload, set_status
 from .tasks import run_full_job
 
@@ -248,6 +249,7 @@ def queue_rerun_from_job_id(
     *,
     rerun_request: RerunRequest | None = None,
     source_delivery_id: str = "",
+    client_name: str = "",
 ) -> str:
     source_job_id = str(job_id or "").strip()
     payload = get_job_input_payload(source_job_id)
@@ -260,6 +262,17 @@ def queue_rerun_from_job_id(
         if isinstance(redis_payload, dict):
             payload = redis_payload
     if not isinstance(payload, dict):
+        # Final fallback: retrieve latest source payload from S3 client-form archive.
+        s3_match = find_latest_client_form_payload(client_name=str(client_name or "").strip())
+        if isinstance(s3_match, tuple) and len(s3_match) == 2 and isinstance(s3_match[1], dict):
+            payload = s3_match[1]
+    if not isinstance(payload, dict):
+        display_name = str(client_name or "").strip()
+        if display_name:
+            raise LookupError(
+                f"missing rerun source payload for job_id={source_job_id}; "
+                f"also no matching S3 clientForm payload found for '{display_name}'"
+            )
         raise LookupError(f"missing rerun source payload for job_id={source_job_id}")
     return queue_rerun_from_payload(
         payload,

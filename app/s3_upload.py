@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 
@@ -16,11 +16,18 @@ S3_BUCKET = os.getenv("S3_BUCKET", "pro-tier-bucket")
 S3_SITEMAPS_PREFIX = os.getenv("S3_SITEMAPS_PREFIX", "sitemaps/")
 S3_FULLCONTENT_PREFIX = os.getenv("S3_FULLCONTENT_PREFIX", "fullContent/")
 S3_MONTHLY_LOGS_PREFIX = os.getenv("S3_MONTHLY_LOGS_PREFIX", "monthly-queue-logs/")
+S3_CLIENT_FORM_BUCKET = os.getenv("S3_CLIENT_FORM_BUCKET", "pro-tier-bucket")
+S3_CLIENT_FORM_PREFIX = os.getenv("S3_CLIENT_FORM_PREFIX", "clientForm/")
+S3_CLIENT_FORM_SCAN_LIMIT = int(os.getenv("S3_CLIENT_FORM_SCAN_LIMIT", "2000"))
 
 
 _s3 = boto3.client("s3", region_name=AWS_REGION)
 _CST = ZoneInfo("America/Chicago")
 logger = logging.getLogger(__name__)
+
+_CLIENT_FORM_TS_RE = re.compile(
+    r"^(?P<name>.+?)_(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d+)?Z)$"
+)
 
 
 
@@ -31,6 +38,114 @@ def _safe_name(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_\-]+", "", name)
     name = re.sub(r"_+", "_", name)
     return name.strip("_") or "business"
+
+
+def _client_form_prefix(prefix: str) -> str:
+    raw = (prefix or "").strip()
+    if not raw:
+        raw = "clientForm/"
+    return raw if raw.endswith("/") else f"{raw}/"
+
+
+def _safe_client_form_name(client_name: str) -> str:
+    raw = str(client_name or "").strip()
+    if not raw:
+        return ""
+    # Remove punctuation while preserving spaces, then normalize underscores.
+    raw = re.sub(r"[^A-Za-z0-9\s]+", "", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    if not raw:
+        return ""
+    parts = []
+    for token in raw.split(" "):
+        t = token.strip()
+        if not t:
+            continue
+        if t.isupper() and len(t) <= 4:
+            parts.append(t)
+        else:
+            parts.append(t[:1].upper() + t[1:].lower())
+    return "_".join(parts)
+
+
+def _name_signature(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _basename_without_ext(key: str) -> str:
+    name = str(key or "").rsplit("/", 1)[-1]
+    if name.lower().endswith(".json"):
+        return name[:-5]
+    return name
+
+
+def _split_client_form_basename(base: str) -> tuple[str, str] | None:
+    match = _CLIENT_FORM_TS_RE.match(base)
+    if not match:
+        return None
+    return match.group("name"), match.group("ts")
+
+
+def _parse_client_form_ts(ts: str) -> datetime:
+    # Examples: 2026-02-20T06-19-06-992Z or 2026-02-20T06-19-06Z
+    raw = str(ts or "").strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    if raw.count("-") >= 6:
+        # milliseconds section exists
+        raw = raw.replace("T", " ", 1)
+        main, ms = raw.rsplit("-", 1)
+        return datetime.strptime(f"{main}.{ms}", "%Y-%m-%d %H-%M-%S.%f").replace(tzinfo=timezone.utc)
+    return datetime.strptime(raw.replace("T", " ", 1), "%Y-%m-%d %H-%M-%S").replace(tzinfo=timezone.utc)
+
+
+def _list_keys_for_prefix(*, bucket: str, prefix: str, limit: int) -> list[dict]:
+    paginator = _s3.get_paginator("list_objects_v2")
+    out: list[dict] = []
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        contents = page.get("Contents") or []
+        for item in contents:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("Key") or "")
+            if not key:
+                continue
+            out.append(item)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _pick_latest_client_form_object(items: list[dict], *, expected_signature: str = "") -> dict | None:
+    candidates: list[tuple[datetime, datetime, str, dict]] = []
+    for item in items:
+        key = str(item.get("Key") or "")
+        if not key.lower().endswith(".json"):
+            continue
+        base = _basename_without_ext(key)
+        split = _split_client_form_basename(base)
+        if split is None:
+            continue
+        name_part, ts_part = split
+        if expected_signature and _name_signature(name_part) != expected_signature:
+            continue
+        try:
+            parsed_ts = _parse_client_form_ts(ts_part)
+        except Exception:
+            parsed_ts = datetime.min.replace(tzinfo=timezone.utc)
+        last_modified = item.get("LastModified")
+        if isinstance(last_modified, datetime):
+            if last_modified.tzinfo is None:
+                last_modified = last_modified.replace(tzinfo=timezone.utc)
+            else:
+                last_modified = last_modified.astimezone(timezone.utc)
+        else:
+            last_modified = datetime.min.replace(tzinfo=timezone.utc)
+        candidates.append((last_modified, parsed_ts, key, item))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda row: (row[0], row[1], row[2]), reverse=True)
+    return candidates[0][3]
 
 
 def datetime_cst_stamp(dt: Optional[datetime] = None) -> str:
@@ -123,17 +238,64 @@ def upload_monthly_logs(month_name: str, year: int, logs: Any) -> str:
     return upload_json(S3_MONTHLY_LOGS_PREFIX, filename, logs)
 
 
-def download_json(key: str) -> Any:
+def download_json(key: str, *, bucket: str | None = None) -> Any:
     if not key:
         return None
+    bucket_name = str(bucket or S3_BUCKET).strip() or S3_BUCKET
     try:
-        resp = _s3.get_object(Bucket=S3_BUCKET, Key=key)
+        resp = _s3.get_object(Bucket=bucket_name, Key=key)
         body = resp["Body"].read()
         if isinstance(body, bytes):
             body = body.decode("utf-8")
         return json.loads(body)
     except Exception:
         return None
+
+
+def find_latest_client_form_payload(
+    *,
+    client_name: str,
+    bucket: str | None = None,
+    prefix: str | None = None,
+    max_scan: int | None = None,
+) -> tuple[str, Dict[str, Any]] | None:
+    """
+    Find newest client form payload from S3 by client-name prefix and return:
+      (key, payload_dict)
+    """
+    name = str(client_name or "").strip()
+    if not name:
+        return None
+
+    bucket_name = str(bucket or S3_CLIENT_FORM_BUCKET).strip() or S3_CLIENT_FORM_BUCKET
+    prefix_root = _client_form_prefix(str(prefix or S3_CLIENT_FORM_PREFIX))
+    safe_name = _safe_client_form_name(name)
+    signature = _name_signature(name)
+    scan_limit = int(max_scan or S3_CLIENT_FORM_SCAN_LIMIT)
+    if scan_limit < 1:
+        scan_limit = 1
+
+    # Fast-path: exact prefix in expected filename format.
+    exact_prefix = f"{prefix_root}{safe_name}_"
+    fast_items = _list_keys_for_prefix(bucket=bucket_name, prefix=exact_prefix, limit=scan_limit)
+    latest = _pick_latest_client_form_object(fast_items)
+
+    # Fallback: broader scan with name-signature matching.
+    if latest is None:
+        broad_items = _list_keys_for_prefix(bucket=bucket_name, prefix=prefix_root, limit=scan_limit)
+        latest = _pick_latest_client_form_object(broad_items, expected_signature=signature)
+
+    if latest is None:
+        return None
+
+    key = str(latest.get("Key") or "").strip()
+    if not key:
+        return None
+
+    payload = download_json(key, bucket=bucket_name)
+    if not isinstance(payload, dict):
+        return None
+    return key, payload
 
 
 def head_object_info(key: str) -> Dict[str, Any] | None:

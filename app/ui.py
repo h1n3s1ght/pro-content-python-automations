@@ -601,11 +601,13 @@ def admin_rerun_delivery(
             source_job_id,
             rerun_request=payload,
             source_delivery_id=str(delivery_id),
+            client_name=str(row.get("client_name") or ""),
         )
-    except LookupError:
+    except LookupError as exc:
         raise HTTPException(
             status_code=404,
-            detail=(
+            detail=str(exc)
+            or (
                 "missing rerun source payload for this delivery job; "
                 "this usually means it was created before source capture was enabled"
             ),

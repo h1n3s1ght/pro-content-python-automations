@@ -114,3 +114,21 @@ def test_queue_rerun_from_job_id_uses_redis_payload_fallback(monkeypatch):
 
     out = rerun_module.queue_rerun_from_job_id("job-old")
     assert out == "new-job-id"
+
+
+def test_queue_rerun_from_job_id_uses_s3_client_form_fallback(monkeypatch):
+    monkeypatch.setattr(rerun_module, "get_job_input_payload", lambda _job_id: None)
+
+    async def _fake_get_payload(_job_id):
+        return None
+
+    monkeypatch.setattr(rerun_module, "get_payload", _fake_get_payload)
+    monkeypatch.setattr(
+        rerun_module,
+        "find_latest_client_form_payload",
+        lambda **_kwargs: ("clientForm/Banks_Consulting_Northwest_2026-02-20T06-19-06-992Z.json", {"metadata": {}, "user_data": {}}),
+    )
+    monkeypatch.setattr(rerun_module, "queue_rerun_from_payload", lambda *_args, **_kwargs: "new-job-id")
+
+    out = rerun_module.queue_rerun_from_job_id("job-old", client_name="Banks Consulting Northwest")
+    assert out == "new-job-id"
