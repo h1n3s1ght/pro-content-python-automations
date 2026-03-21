@@ -13,8 +13,9 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .auth import require_admin_auth
+from .client_identity import build_client_key
 from .db import get_db_session
-from .db_models import DeliveryOutbox
+from .db_models import DeliveryOutbox, JobInput
 from .delivery_rerun import queue_rerun_from_job_id
 from .delivery_schemas import (
     DeliveryListResponse,
@@ -375,6 +376,49 @@ def _allowed_send_statuses(*, replay: bool) -> tuple[str, ...]:
     return _REPLAY_SEND_STATUSES if replay else READY_STATUSES
 
 
+def _job_input_client_keys(session: Session, *, job_ids: list[str]) -> dict[str, str]:
+    unique_job_ids = [jid for jid in {str(v or "").strip() for v in job_ids} if jid]
+    if not unique_job_ids:
+        return {}
+    rows = session.execute(
+        select(JobInput.job_id, JobInput.client_key).where(JobInput.job_id.in_(unique_job_ids))
+    ).all()
+    out: dict[str, str] = {}
+    for row in rows:
+        job_id = str(row[0] or "").strip()
+        client_key = str(row[1] or "").strip()
+        if job_id and client_key:
+            out[job_id] = client_key
+    return out
+
+
+def _dedupe_deliveries_by_client(
+    items: list[dict],
+    *,
+    job_client_key_by_job_id: dict[str, str],
+) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in items:
+        item = dict(raw)
+        job_id = str(item.get("job_id") or "").strip()
+        tier_name = normalize_delivery_tier(str(item.get("website_tier") or "pro"))
+        client_key = str(job_client_key_by_job_id.get(job_id) or "").strip()
+        if not client_key:
+            client_key = build_client_key(
+                client_name=item.get("client_name"),
+                business_domain="",
+            )
+        if not client_key:
+            client_key = str(item.get("client_name") or "").strip().lower()
+        group_key = f"{tier_name}:{client_key}"
+        if group_key in seen:
+            continue
+        seen.add(group_key)
+        out.append(item)
+    return out
+
+
 @router.get("/api/deliveries", response_model=DeliveryListResponse)
 def list_deliveries(
     status: str | None = Query(default=None),
@@ -414,10 +458,7 @@ def list_deliveries(
 
     union_sql = " UNION ALL ".join(union_parts)
     where_clauses = []
-    params: dict[str, object] = {
-        "offset": (page - 1) * page_size,
-        "limit": page_size,
-    }
+    params: dict[str, object] = {}
     status_values = [s.strip().upper() for s in str(status or "").split(",") if s.strip()]
     if status_values:
         status_param_keys = []
@@ -441,28 +482,35 @@ def list_deliveries(
         params["created_to"] = created_to
 
     where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-    count_stmt = text(f"SELECT COUNT(*) FROM ({union_sql}) AS deliveries {where_sql}")
-    total = int(session.execute(count_stmt, params).scalar_one() or 0)
-
     list_stmt = text(
         f"""
         SELECT *
         FROM ({union_sql}) AS deliveries
         {where_sql}
         ORDER BY created_at DESC NULLS LAST
-        OFFSET :offset
-        LIMIT :limit
         """
     )
-    items = session.execute(list_stmt, params).mappings().all()
+    items = [dict(row) for row in session.execute(list_stmt, params).mappings().all()]
+    job_client_key_by_job_id = _job_input_client_keys(
+        session,
+        job_ids=[str(item.get("job_id") or "").strip() for item in items],
+    )
+    deduped_items = _dedupe_deliveries_by_client(
+        items,
+        job_client_key_by_job_id=job_client_key_by_job_id,
+    )
+    total = len(deduped_items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_items = deduped_items[start:end]
 
     logger.info(
         "ui_list_deliveries_ok total=%s returned=%s",
         int(total or 0),
-        len(items),
+        len(page_items),
     )
     return DeliveryListResponse(
-        items=[DeliveryOutboxSchema.model_validate(dict(item)) for item in items],
+        items=[DeliveryOutboxSchema.model_validate(dict(item)) for item in page_items],
         page=page,
         page_size=page_size,
         total=total,
